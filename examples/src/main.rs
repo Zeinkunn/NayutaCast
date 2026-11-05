@@ -41,6 +41,9 @@ impl GetSize for Window {
 #[derive(Debug)]
 enum Events {
     CreateReceiver(Ipv4Addr, MediaStreamDescription),
+    StartSender,
+    StartReceiver,
+    Stop,
 }
 
 struct Observer {
@@ -196,6 +199,58 @@ impl App {
             event_loop,
         }
     }
+
+    fn start_sender(&mut self) {
+        if self.sender.is_none() {
+            if let Some(window) = self.window.clone() {
+                println!("[+] Starting SENDER (Screen capture & streaming)...");
+                match Sender::new(self.event_loop.clone(), window, &Configure::parse()) {
+                    Ok(sender) => {
+                        println!("[✓] SENDER started successfully!");
+                        self.sender.replace(sender);
+                    }
+                    Err(e) => {
+                        eprintln!("[!] Failed to start SENDER: {:?}", e);
+                    }
+                }
+            } else {
+                eprintln!("[!] Window not ready yet.");
+            }
+        } else {
+            println!("[*] SENDER is already running.");
+        }
+    }
+
+    fn start_receiver(&mut self) {
+        if self.service.is_none() {
+            println!("[+] Starting RECEIVER discovery service...");
+            match get_runtime_handle().block_on(DiscoveryService::new(
+                "nayutacast-example".to_string(),
+                Observer {
+                    events: self.event_loop.clone(),
+                    description: None,
+                },
+            )) {
+                Ok(service) => {
+                    println!("[✓] Discovery active. Waiting for Senders on network...");
+                    self.service.replace(service);
+                }
+                Err(e) => {
+                    eprintln!("[!] Failed to start Discovery Service: {:?}", e);
+                }
+            }
+        } else {
+            println!("[*] RECEIVER discovery is already active.");
+        }
+    }
+
+    fn stop(&mut self) {
+        println!("[-] Stopping SENDER and RECEIVER...");
+        drop(self.receiver.take());
+        drop(self.sender.take());
+        drop(self.service.take());
+        println!("[✓] Stopped.");
+    }
 }
 
 impl ApplicationHandler<Events> for App {
@@ -209,10 +264,35 @@ impl ApplicationHandler<Events> for App {
         attr.active = true;
         attr.inner_size = Some(winit::dpi::Size::Physical(PhysicalSize::new(1280, 720)));
 
-        self.window
-            .replace(Arc::new(event_loop.create_window(attr).unwrap()));
+        let window = Arc::new(event_loop.create_window(attr).unwrap());
+        self.window.replace(window);
 
         startup().unwrap();
+
+        let config = Configure::parse();
+        println!();
+        println!("============================================================");
+        println!("  Nayutacast Example (Window & Terminal Controls Ready)    ");
+        println!("============================================================");
+        println!("  • Press 's' + Enter (or press 'S' in GUI) -> SENDER");
+        println!("  • Press 'r' + Enter (or press 'R' in GUI) -> RECEIVER");
+        println!("  • Press 'k' + Enter (or press 'K' in GUI) -> STOP");
+        println!("============================================================");
+        println!();
+
+        if let Some(mode) = &config.mode {
+            match mode.to_lowercase().as_str() {
+                "s" | "sender" => {
+                    let _ = self.event_loop.send_event(Events::StartSender);
+                }
+                "r" | "receiver" => {
+                    let _ = self.event_loop.send_event(Events::StartReceiver);
+                }
+                _ => {
+                    eprintln!("[!] Unknown mode: '{}'. Expected 'sender' or 'receiver'.", mode);
+                }
+            }
+        }
     }
 
     fn window_event(
@@ -222,59 +302,22 @@ impl ApplicationHandler<Events> for App {
         event: WindowEvent,
     ) {
         match event {
-            // The user closes the window, and we close the sender and receiver, in that order, and
-            // release the renderer and nayutacast instances, and finally stop the message loop.
             WindowEvent::CloseRequested => {
-                drop(self.sender.take());
-                drop(self.receiver.take());
-                drop(self.service.take());
-
+                self.stop();
                 event_loop.exit();
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if !event.repeat && event.state == ElementState::Released {
                     if let PhysicalKey::Code(key) = event.physical_key {
                         match key {
-                            // When the S key is pressed, the sender is created, but check to see if
-                            // the sender has already been created between sender creation to avoid
-                            // duplicate creation.
-                            //
-                            // The receiving end is the same.
                             KeyCode::KeyS => {
-                                if self.sender.is_none() {
-                                    if let Some(window) = self.window.clone() {
-                                        self.sender.replace(
-                                            Sender::new(
-                                                self.event_loop.clone(),
-                                                window,
-                                                &Configure::parse(),
-                                            )
-                                            .unwrap(),
-                                        );
-                                    }
-                                }
+                                self.start_sender();
                             }
                             KeyCode::KeyR => {
-                                if self.service.is_none() {
-                                    self.service.replace(
-                                        get_runtime_handle()
-                                            .block_on(DiscoveryService::new(
-                                                "nayutacast-example".to_string(),
-                                                Observer {
-                                                    events: self.event_loop.clone(),
-                                                    description: None,
-                                                },
-                                            ))
-                                            .unwrap(),
-                                    );
-                                }
+                                self.start_receiver();
                             }
-                            // When the S key is pressed, either the transmitter or the receiver
-                            // needs to be turned off. No distinction is made here; both the
-                            // transmitter and the receiver are turned off.
                             KeyCode::KeyK => {
-                                drop(self.receiver.take());
-                                drop(self.sender.take());
+                                self.stop();
                             }
                             _ => (),
                         }
@@ -289,10 +332,20 @@ impl ApplicationHandler<Events> for App {
         match event {
             Events::CreateReceiver(ip, description) => {
                 if let (None, Some(window)) = (&self.receiver, &self.window) {
+                    println!("[+] Connected to Sender at {}, rendering stream...", ip);
                     self.receiver.replace(
                         Receiver::new(Configure::parse(), window.clone(), ip, description).unwrap(),
                     );
                 }
+            }
+            Events::StartSender => {
+                self.start_sender();
+            }
+            Events::StartReceiver => {
+                self.start_receiver();
+            }
+            Events::Stop => {
+                self.stop();
             }
         }
     }
@@ -312,6 +365,9 @@ struct Configure {
     /// direct, relay, multicast
     #[arg(long)]
     strategy: Option<String>,
+    /// Auto-start mode: 'sender' or 'receiver'
+    #[arg(long)]
+    mode: Option<String>,
     #[arg(long, default_value_t = 1280)]
     width: u32,
     #[arg(long, default_value_t = 720)]
@@ -386,6 +442,33 @@ fn main() -> Result<()> {
     event_loop.set_control_flow(ControlFlow::Wait);
 
     let proxy = Arc::new(event_loop.create_proxy());
+
+    let proxy_stdin = proxy.clone();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let stdin = std::io::stdin();
+        for line in stdin.lock().lines() {
+            if let Ok(line) = line {
+                let cmd = line.trim().to_lowercase();
+                match cmd.as_str() {
+                    "s" | "sender" => {
+                        let _ = proxy_stdin.send_event(Events::StartSender);
+                    }
+                    "r" | "receiver" => {
+                        let _ = proxy_stdin.send_event(Events::StartReceiver);
+                    }
+                    "k" | "stop" | "q" | "quit" => {
+                        let _ = proxy_stdin.send_event(Events::Stop);
+                    }
+                    "" => (),
+                    _ => {
+                        println!("Unknown command: '{}'. Type 's' (Sender), 'r' (Receiver), or 'k' (Stop).", cmd);
+                    }
+                }
+            }
+        }
+    });
+
     event_loop.run_app(&mut App::new(proxy))?;
 
     // When exiting the application, the environment of nayutacast should be cleaned
