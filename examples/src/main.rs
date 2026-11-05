@@ -81,26 +81,44 @@ impl Sender {
     ) -> Result<Self> {
         let video_options = configure.get_video_options();
 
-        // Get the first screen that can be captured.
+        // Get screen source
+        let screens = Capture::get_sources(SourceType::Screen)?;
+        println!("[*] Discovered {} screen source(s):", screens.len());
+        for (i, s) in screens.iter().enumerate() {
+            println!("    [{}] {} (id: {}, default: {})", i, s.name, s.id, s.is_default);
+        }
+        let chosen_screen = if let Some(idx) = configure.monitor {
+            screens.get(idx).cloned()
+        } else {
+            screens.iter().find(|it| it.is_default).cloned().or_else(|| screens.first().cloned())
+        };
+
         let mut video = None;
-        if let Some(source) = Capture::get_sources(SourceType::Screen)?
-            .iter()
-            .find(|it| it.is_default)
-        {
+        if let Some(source) = chosen_screen {
+            println!("[+] Selected screen: {} ({})", source.name, source.id);
             video = Some(NayutacastSenderTrackOptions {
                 options: video_options.clone(),
-                source: source.clone(),
+                source,
             });
         }
 
-        // Get the first audio input device that can be captured.
+        // Get audio source
+        let audio_sources = Capture::get_sources(SourceType::Audio)?;
+        println!("[*] Discovered {} audio source(s):", audio_sources.len());
+        for (i, s) in audio_sources.iter().enumerate() {
+            println!("    [{}] {} (id: {}, default: {})", i, s.name, s.id, s.is_default);
+        }
+        let chosen_audio = if let Some(idx) = configure.audio_source {
+            audio_sources.get(idx).cloned()
+        } else {
+            audio_sources.iter().find(|it| it.is_default).cloned().or_else(|| audio_sources.first().cloned())
+        };
+
         let mut audio = None;
-        if let Some(source) = Capture::get_sources(SourceType::Audio)?
-            .iter()
-            .find(|it| it.is_default)
-        {
+        if let Some(source) = chosen_audio {
+            println!("[+] Selected audio: {} ({})", source.name, source.id);
             audio = Some(NayutacastSenderTrackOptions {
-                source: source.clone(),
+                source,
                 options: AudioOptions {
                     sample_rate: 48000,
                     bit_rate: 64000,
@@ -367,6 +385,12 @@ struct Configure {
     /// Auto-start mode: 'sender' or 'receiver'
     #[arg(long)]
     mode: Option<String>,
+    /// Monitor source index (0, 1, ...)
+    #[arg(long)]
+    monitor: Option<usize>,
+    /// Audio source index (0, 1, ...)
+    #[arg(long)]
+    audio_source: Option<usize>,
     #[arg(long, default_value_t = 1280)]
     width: u32,
     #[arg(long, default_value_t = 720)]

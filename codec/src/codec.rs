@@ -65,7 +65,7 @@ impl CodecType {
                 if cfg!(target_os = "windows") {
                     *kind != VideoEncoderType::VideoToolBox
                 } else if cfg!(target_os = "linux") {
-                    *kind == VideoEncoderType::X264
+                    *kind == VideoEncoderType::X264 || *kind == VideoEncoderType::Vaapi
                 } else {
                     *kind == VideoEncoderType::X264 || *kind == VideoEncoderType::VideoToolBox
                 }
@@ -74,7 +74,7 @@ impl CodecType {
                 if cfg!(target_os = "windows") {
                     *kind != VideoDecoderType::VideoToolBox
                 } else if cfg!(target_os = "linux") {
-                    *kind == VideoDecoderType::H264
+                    *kind == VideoDecoderType::H264 || *kind == VideoDecoderType::Vaapi
                 } else {
                     *kind == VideoDecoderType::H264 || *kind == VideoDecoderType::VideoToolBox
                 }
@@ -110,7 +110,7 @@ impl CodecType {
                 avcodec_find_encoder_by_name(PSTR::from(kind.to_string()).as_ptr())
             },
             Self::Decoder(kind) => {
-                if *kind == VideoDecoderType::D3D11 || *kind == VideoDecoderType::VideoToolBox {
+                if *kind == VideoDecoderType::D3D11 || *kind == VideoDecoderType::VideoToolBox || *kind == VideoDecoderType::Vaapi {
                     unsafe { avcodec_find_decoder(AVCodecID::AV_CODEC_ID_H264) }
                 } else {
                     unsafe { avcodec_find_decoder_by_name(PSTR::from(kind.to_string()).as_ptr()) }

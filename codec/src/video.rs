@@ -410,6 +410,9 @@ impl VideoEncoder {
             VideoEncoderType::VideoToolBox => {
                 set_option(context_mut, "realtime", 1);
             }
+            VideoEncoderType::Vaapi => {
+                set_option(context_mut, "low_power", 1);
+            }
         };
 
         if unsafe { avcodec_open2(this.context, codec, null_mut()) } != 0 {

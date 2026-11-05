@@ -113,7 +113,7 @@ impl<T> VideoRenderOptionsBuilder<T> {
     pub fn from_sender(mut self, options: &NayutacastSenderOptions) -> Self {
         if let Some(it) = &options.media.video {
             self.0.source.sub_format = match it.options.codec {
-                VideoEncoderType::X264 => VideoSubFormat::SW,
+                VideoEncoderType::X264 | VideoEncoderType::Vaapi => VideoSubFormat::SW,
                 VideoEncoderType::Qsv => VideoSubFormat::D3D11,
                 VideoEncoderType::VideoToolBox => VideoSubFormat::CvPixelBufferRef,
             };
@@ -136,7 +136,7 @@ impl<T> VideoRenderOptionsBuilder<T> {
             self.0.source.format = it.format;
             self.0.source.size = it.size;
             self.0.source.sub_format = match options.video_decoder {
-                VideoDecoderType::H264 => VideoSubFormat::SW,
+                VideoDecoderType::H264 | VideoDecoderType::Vaapi => VideoSubFormat::SW,
                 VideoDecoderType::Qsv | VideoDecoderType::D3D11 => {
                     if it.format == VideoFormat::I420 {
                         VideoSubFormat::SW

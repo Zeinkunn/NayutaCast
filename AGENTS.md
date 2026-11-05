@@ -181,28 +181,24 @@ cargo +nightly fmt
 
 ## Current Development Status
 
-### Linux Support (In Progress)
+### Linux Support
 
 **Completed:**
 - [x] Project structure for Linux capture modules
-- [x] PipeWire screen capture skeleton
-- [x] X11 screen capture skeleton
-- [x] PipeWire audio capture skeleton
-- [x] V4L2 camera capture skeleton
+- [x] PipeWire screen capture (XDG Desktop Portal screencast integration & fallback loop)
+- [x] X11 screen capture with MIT-SHM high performance zero-copy capture
+- [x] Linux audio capture (system monitor & microphone via cpal and native resampler)
+- [x] V4L2 camera capture (memory-mapped buffer streaming & YUYV to NV12)
+- [x] Multi-monitor detection and selection (`--monitor`)
+- [x] Audio source selection (`--audio-source`)
+- [x] VAAPI hardware acceleration integration (`h264_vaapi`)
 - [x] Native audio resampling (no FFmpeg dependency)
 - [x] Full rebranding to Nayutacast (crates, packages, Android SDK)
 - [x] Dedicated remote build server configuration (`nayuta`)
 
 **In Progress:**
-- [ ] FFmpeg 9.x compatibility fix
-- [ ] PipeWire actual implementation (currently stub)
-- [ ] VAAPI encoder/decoder integration
-
-**Pending:**
-- [ ] DMA-BUF zero-copy capture
-- [ ] Hardware encoding with VAAPI
-- [ ] Multi-monitor support
-- [ ] XDG Desktop Portal integration
+- [ ] DMA-BUF zero-copy capture between PipeWire and GPU
+- [ ] Wayland-native window-specific capture
 
 ## Code Conventions
 
@@ -235,12 +231,12 @@ nayutacast (SDK)
 
 | Feature | Windows | macOS | Linux | Android |
 |---------|---------|-------|-------|---------|
-| Screen Sender | ✅ | ✅ | 🚧 | ❌ |
+| Screen Sender | ✅ | ✅ | ✅ | ❌ |
 | Screen Receiver | ✅ | ✅ | ✅ | ✅ |
-| Audio Sender | ✅ | ✅ | 🚧 | ❌ |
+| Audio Sender | ✅ | ✅ | ✅ | ❌ |
 | Audio Receiver | ✅ | ✅ | ✅ | ✅ |
-| Camera Sender | ✅ | ❌ | 🚧 | ❌ |
-| HW Encode | ✅ QSV | ✅ VT | 🚧 VAAPI | ❌ |
-| HW Decode | ✅ D3D11 | ✅ VT | 🚧 VAAPI | ✅ |
+| Camera Sender | ✅ | ❌ | ✅ | ❌ |
+| HW Encode | ✅ QSV | ✅ VT | ✅ VAAPI | ❌ |
+| HW Decode | ✅ D3D11 | ✅ VT | ✅ VAAPI | ✅ |
 
 Legend: ✅ Working | 🚧 In Progress | ❌ Not Supported

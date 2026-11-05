@@ -28,6 +28,10 @@ pub enum VideoDecoderType {
     /// VideoToolbox is a low-level framework that provides direct access to
     /// hardware encoders and decoders.
     VideoToolBox,
+    /// [VAAPI](https://en.wikipedia.org/wiki/Video_Acceleration_API)
+    ///
+    /// Video Acceleration API (VA-API) for hardware acceleration on Linux (Intel/AMD).
+    Vaapi,
 }
 
 impl ToString for VideoDecoderType {
@@ -37,6 +41,7 @@ impl ToString for VideoDecoderType {
             Self::D3D11 => "d3d11va",
             Self::Qsv => "h264_qsv",
             Self::VideoToolBox => "h264_videotoolbox",
+            Self::Vaapi => "h264_vaapi",
         }
         .to_string()
     }
@@ -51,6 +56,7 @@ impl FromStr for VideoDecoderType {
             "d3d11va" => Self::D3D11,
             "h264_qsv" => Self::Qsv,
             "h264_videotoolbox" => Self::VideoToolBox,
+            "h264_vaapi" | "vaapi" => Self::Vaapi,
             _ => return Err(Error::new(ErrorKind::InvalidInput, value)),
         })
     }
@@ -76,6 +82,10 @@ pub enum VideoEncoderType {
     /// VideoToolbox is a low-level framework that provides direct access to
     /// hardware encoders and decoders.
     VideoToolBox,
+    /// [VAAPI](https://en.wikipedia.org/wiki/Video_Acceleration_API)
+    ///
+    /// Video Acceleration API (VA-API) for hardware acceleration on Linux (Intel/AMD).
+    Vaapi,
 }
 
 impl ToString for VideoEncoderType {
@@ -84,6 +94,7 @@ impl ToString for VideoEncoderType {
             Self::X264 => "libx264",
             Self::Qsv => "h264_qsv",
             Self::VideoToolBox => "h264_videotoolbox",
+            Self::Vaapi => "h264_vaapi",
         }
         .to_string()
     }
@@ -97,6 +108,7 @@ impl FromStr for VideoEncoderType {
             "libx264" => Self::X264,
             "h264_qsv" => Self::Qsv,
             "h264_videotoolbox" => Self::VideoToolBox,
+            "h264_vaapi" | "vaapi" => Self::Vaapi,
             _ => return Err(Error::new(ErrorKind::InvalidInput, value)),
         })
     }
