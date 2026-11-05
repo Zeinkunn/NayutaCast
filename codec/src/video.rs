@@ -109,7 +109,7 @@ impl VideoDecoder {
             return Err(VideoDecoderError::OpenAVCodecError);
         }
 
-        this.parser = unsafe { av_parser_init({ &*codec }.id as i32) };
+        this.parser = unsafe { av_parser_init({ &*codec }.id as _) };
         if this.parser.is_null() {
             return Err(VideoDecoderError::InitAVCodecParserContextError);
         }

@@ -49,9 +49,10 @@ fn main() -> Result<()> {
     let out_dir = env::var("OUT_DIR")?;
 
     let srt_dir = join(&out_dir, "srt");
-    if !is_exsit(&srt_dir) {
+    if !is_exsit(&join(&srt_dir, "CMakeLists.txt")) {
+        let _ = fs::remove_dir_all(&srt_dir);
         exec(
-            "git clone --branch v1.5.4 https://github.com/Haivision/srt",
+            "git clone --depth 1 --branch v1.5.4 https://github.com/Haivision/srt",
             &out_dir,
         )?;
     }
