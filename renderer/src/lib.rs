@@ -173,6 +173,36 @@ impl<'a> Renderer<'a> {
             direct3d,
         })?;
 
+        // Present an initial frame so Wayland compositors (Hyprland, Sway, etc.)
+        // map and display the window immediately without waiting for the first stream frame.
+        if let Ok(output) = surface.get_current_texture() {
+            let view = output.texture.create_view(&TextureViewDescriptor::default());
+            let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
+                label: Some("initial_clear"),
+            });
+            {
+                let _render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                    color_attachments: &[Some(RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: Operations {
+                            load: LoadOp::Clear(Color {
+                                r: 0.1,
+                                g: 0.12,
+                                b: 0.18,
+                                a: 1.0,
+                            }),
+                            store: StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+            }
+            queue.submit(Some(encoder.finish()));
+            output.present();
+            log::info!("initial surface frame presented to window");
+        }
+
         Ok(Self {
             viewport,
             back_buffer,

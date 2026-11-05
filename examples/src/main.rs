@@ -280,17 +280,16 @@ impl ApplicationHandler<Events> for App {
         println!("============================================================");
         println!();
 
-        if let Some(mode) = &config.mode {
-            match mode.to_lowercase().as_str() {
-                "s" | "sender" => {
-                    let _ = self.event_loop.send_event(Events::StartSender);
-                }
-                "r" | "receiver" => {
-                    let _ = self.event_loop.send_event(Events::StartReceiver);
-                }
-                _ => {
-                    eprintln!("[!] Unknown mode: '{}'. Expected 'sender' or 'receiver'.", mode);
-                }
+        let mode = config.mode.as_deref().unwrap_or("sender");
+        match mode.to_lowercase().as_str() {
+            "s" | "sender" => {
+                let _ = self.event_loop.send_event(Events::StartSender);
+            }
+            "r" | "receiver" => {
+                let _ = self.event_loop.send_event(Events::StartReceiver);
+            }
+            _ => {
+                eprintln!("[!] Unknown mode: '{}'. Expected 'sender' or 'receiver'.", mode);
             }
         }
     }
