@@ -284,6 +284,11 @@ fn run_x11_capture<S: FrameConsumer<Frame = VideoFrame>>(
         }
 
         if captured {
+            static LOGGED: AtomicBool = AtomicBool::new(false);
+            if !LOGGED.swap(true, Ordering::Relaxed) {
+                let non_zero = y_plane.iter().any(|&b| b > 0);
+                log::info!("X11 capture first frame sinked: has_data={}, sample={:?}", non_zero, &y_plane[1000..1010]);
+            }
             frame.data[0] = y_plane.as_ptr() as *const c_void;
             frame.data[1] = uv_plane.as_ptr() as *const c_void;
             if !consumer.sink(&frame) {

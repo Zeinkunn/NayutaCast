@@ -59,23 +59,59 @@ impl CaptureHandler for PipeWireScreenCapture {
     type CaptureOptions = VideoCaptureSourceDescription;
 
     fn get_sources() -> Result<Vec<Source>, Self::Error> {
-        // Enumerate via portal / PipeWire sources
-        Ok(vec![
-            Source {
-                id: "portal_screen_0".to_string(),
-                name: "Primary Monitor (Wayland Portal)".to_string(),
+        let mut sources = Vec::new();
+        // Detect monitors via hyprctl monitors if on Hyprland / Wayland
+        if let Ok(output) = std::process::Command::new("hyprctl").arg("monitors").output() {
+            if output.status.success() {
+                if let Ok(text) = std::str::from_utf8(&output.stdout) {
+                    let mut current_name = None;
+                    let mut current_res = None;
+                    for line in text.lines() {
+                        let trimmed = line.trim();
+                        if trimmed.starts_with("Monitor ") {
+                            if let (Some(name), Some(res)) = (current_name.take(), current_res.take()) {
+                                let idx = sources.len();
+                                sources.push(Source {
+                                    id: format!("wayland_{}", name),
+                                    name: format!("{} ({})", name, res),
+                                    index: idx,
+                                    kind: SourceType::Screen,
+                                    is_default: idx == 0,
+                                });
+                            }
+                            if let Some(part) = trimmed.strip_prefix("Monitor ") {
+                                let name = part.split_whitespace().next().unwrap_or("");
+                                current_name = Some(name.to_string());
+                            }
+                        } else if trimmed.contains(" at ") && current_name.is_some() && current_res.is_none() {
+                            let res = trimmed.split('@').next().unwrap_or("").trim();
+                            current_res = Some(res.to_string());
+                        }
+                    }
+                    if let (Some(name), Some(res)) = (current_name.take(), current_res.take()) {
+                        let idx = sources.len();
+                        sources.push(Source {
+                            id: format!("wayland_{}", name),
+                            name: format!("{} ({})", name, res),
+                            index: idx,
+                            kind: SourceType::Screen,
+                            is_default: idx == 0,
+                        });
+                    }
+                }
+            }
+        }
+
+        if sources.is_empty() {
+            sources.push(Source {
+                id: "wayland_default".to_string(),
+                name: "Primary Monitor (Wayland)".to_string(),
                 index: 0,
                 kind: SourceType::Screen,
                 is_default: true,
-            },
-            Source {
-                id: "portal_screen_1".to_string(),
-                name: "Secondary Monitor (Wayland Portal)".to_string(),
-                index: 1,
-                kind: SourceType::Screen,
-                is_default: false,
-            },
-        ])
+            });
+        }
+        Ok(sources)
     }
 
     fn start<S: FrameConsumer<Frame = Self::Frame> + 'static>(
@@ -94,10 +130,17 @@ impl CaptureHandler for PipeWireScreenCapture {
         let height = options.size.height;
         let fps = options.fps.max(1);
 
+        let monitor_output = if options.source.id.starts_with("wayland_") {
+            let name = options.source.id.strip_prefix("wayland_").unwrap_or("").to_string();
+            if name == "all" || name == "default" { None } else { Some(name) }
+        } else {
+            None
+        };
+
         let handle = thread::Builder::new()
             .name("PipeWireScreenCapture".to_string())
             .spawn(move || {
-                if let Err(e) = run_pipewire_capture(running, width, height, fps, consumer) {
+                if let Err(e) = run_pipewire_capture(running, width, height, fps, monitor_output, consumer) {
                     log::error!("PipeWire capture error: {:?}", e);
                 }
             })?;
@@ -120,6 +163,7 @@ fn run_pipewire_capture<S: FrameConsumer<Frame = VideoFrame>>(
     width: u32,
     height: u32,
     fps: u8,
+    monitor_output: Option<String>,
     mut consumer: S,
 ) -> Result<(), ScreenCaptureError> {
     pw::init();
@@ -144,8 +188,8 @@ fn run_pipewire_capture<S: FrameConsumer<Frame = VideoFrame>>(
         log::warn!("PipeWire stream ended or failed, running active fallback stream");
     }
 
-    // Active fallback stream: generates smooth animated pattern ensuring client never stalls
-    run_fallback_loop(running, width, height, fps, consumer)
+    // Active fallback stream: generates real desktop frames via grim or smooth animated pattern
+    run_fallback_loop(running, width, height, fps, monitor_output, consumer)
 }
 
 fn run_pipewire_stream<S: FrameConsumer<Frame = VideoFrame>>(
@@ -326,6 +370,7 @@ fn run_fallback_loop<S: FrameConsumer<Frame = VideoFrame>>(
     width: u32,
     height: u32,
     fps: u8,
+    monitor_output: Option<String>,
     mut consumer: S,
 ) -> Result<(), ScreenCaptureError> {
     let y_size = (width * height) as usize;
@@ -348,26 +393,59 @@ fn run_fallback_loop<S: FrameConsumer<Frame = VideoFrame>>(
 
     let mut tick = 0u64;
     let frame_duration = Duration::from_millis(1000 / fps as u64);
+    let mut grim_active = true;
 
     while running.load(Ordering::SeqCst) {
         let start = Instant::now();
         tick += 1;
 
-        let offset = ((tick * 4) % width as u64) as usize;
-        for y in 0..height as usize {
-            let row_idx = y * width as usize;
-            let y_val = ((y * 255) / height.max(1) as usize) as u8;
-            for x in 0..width as usize {
-                let x_wave = (((x + offset) % 256) as u8) / 2;
-                y_plane[row_idx + x] = y_val / 2 + x_wave;
+        let mut captured = false;
+        if grim_active {
+            if let Some((rgb, src_w, src_h)) = capture_grim_frame(monitor_output.as_deref()) {
+                rgb_to_nv12(
+                    &rgb,
+                    src_w,
+                    src_h,
+                    width as usize,
+                    height as usize,
+                    &mut y_plane,
+                    &mut uv_plane,
+                );
+                captured = true;
+                if tick == 1 {
+                    log::info!(
+                        "Wayland live desktop capture active via grim ({}x{} -> {}x{})",
+                        src_w,
+                        src_h,
+                        width,
+                        height
+                    );
+                }
+            } else {
+                if tick == 1 {
+                    log::warn!("grim screen capture not available; using synthetic animated wave fallback");
+                }
+                grim_active = false;
             }
         }
 
-        let u_val = ((tick * 2) % 256) as u8;
-        let v_val = (((tick * 3) + 128) % 256) as u8;
-        for i in (0..uv_size).step_by(2) {
-            uv_plane[i] = u_val;
-            uv_plane[i + 1] = v_val;
+        if !captured {
+            let offset = ((tick * 4) % width as u64) as usize;
+            for y in 0..height as usize {
+                let row_idx = y * width as usize;
+                let y_val = ((y * 255) / height.max(1) as usize) as u8;
+                for x in 0..width as usize {
+                    let x_wave = (((x + offset) % 256) as u8) / 2;
+                    y_plane[row_idx + x] = y_val / 2 + x_wave;
+                }
+            }
+
+            let u_val = ((tick * 2) % 256) as u8;
+            let v_val = (((tick * 3) + 128) % 256) as u8;
+            for i in (0..uv_size).step_by(2) {
+                uv_plane[i] = u_val;
+                uv_plane[i + 1] = v_val;
+            }
         }
 
         frame.data[0] = y_plane.as_ptr() as *const c_void;
@@ -384,4 +462,77 @@ fn run_fallback_loop<S: FrameConsumer<Frame = VideoFrame>>(
     }
 
     Ok(())
+}
+
+fn capture_grim_frame(output_name: Option<&str>) -> Option<(Vec<u8>, usize, usize)> {
+    let mut cmd = std::process::Command::new("grim");
+    if let Some(out) = output_name {
+        cmd.args(["-o", out]);
+    }
+    cmd.args(["-t", "ppm", "-"]);
+    let output = cmd.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let data = output.stdout;
+    if !data.starts_with(b"P6\n") {
+        return None;
+    }
+    let idx = 3;
+    let next_newline = data[idx..].iter().position(|&b| b == b'\n')? + idx;
+    let dims_str = std::str::from_utf8(&data[idx..next_newline]).ok()?;
+    let mut parts = dims_str.split_whitespace();
+    let w: usize = parts.next()?.parse().ok()?;
+    let h: usize = parts.next()?.parse().ok()?;
+    let idx2 = next_newline + 1;
+    let maxval_newline = data[idx2..].iter().position(|&b| b == b'\n')? + idx2;
+    let rgb = data[maxval_newline + 1..].to_vec();
+    if rgb.len() < w * h * 3 {
+        return None;
+    }
+    Some((rgb, w, h))
+}
+
+pub fn rgb_to_nv12(
+    src_rgb: &[u8],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+    dst_y: &mut [u8],
+    dst_uv: &mut [u8],
+) {
+    let x_ratio = (src_w << 16) / dst_w.max(1);
+    let y_ratio = (src_h << 16) / dst_h.max(1);
+
+    for dy in 0..dst_h {
+        let sy = ((dy * y_ratio) >> 16).min(src_h.saturating_sub(1));
+        let src_row = sy * src_w * 3;
+        let dst_row = dy * dst_w;
+
+        for dx in 0..dst_w {
+            let sx = ((dx * x_ratio) >> 16).min(src_w.saturating_sub(1));
+            let px = src_row + sx * 3;
+
+            if px + 2 < src_rgb.len() {
+                let r = src_rgb[px] as i32;
+                let g = src_rgb[px + 1] as i32;
+                let b = src_rgb[px + 2] as i32;
+
+                let y = ((19595 * r + 38470 * g + 7471 * b + 32768) >> 16) as u8;
+                dst_y[dst_row + dx] = y;
+
+                if (dy & 1 == 0) && (dx & 1 == 0) {
+                    let uv_row = (dy >> 1) * dst_w;
+                    let uv_idx = uv_row + dx;
+                    let u = (((-11059 * r - 21709 * g + 32768 * b + 32768) >> 16) + 128) as u8;
+                    let v = (((32768 * r - 27439 * g - 5329 * b + 32768) >> 16) + 128) as u8;
+                    if uv_idx + 1 < dst_uv.len() {
+                        dst_uv[uv_idx] = u;
+                        dst_uv[uv_idx + 1] = v;
+                    }
+                }
+            }
+        }
+    }
 }

@@ -456,7 +456,18 @@ impl Configure {
 }
 
 fn main() -> Result<()> {
-    simple_logger::init_with_level(log::Level::Info)?;
+    let level = std::env::var("RUST_LOG")
+        .ok()
+        .and_then(|lvl| match lvl.to_lowercase().as_str() {
+            "trace" => Some(log::LevelFilter::Trace),
+            "debug" => Some(log::LevelFilter::Debug),
+            "info" => Some(log::LevelFilter::Info),
+            "warn" => Some(log::LevelFilter::Warn),
+            "error" => Some(log::LevelFilter::Error),
+            _ => None,
+        })
+        .unwrap_or(log::LevelFilter::Info);
+    simple_logger::SimpleLogger::new().with_level(level).init()?;
 
     Configure::parse();
 
