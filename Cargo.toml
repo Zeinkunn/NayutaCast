@@ -1,0 +1,34 @@
+[profile.release]
+debug-assertions = false
+overflow-checks = false
+strip = "debuginfo"
+panic = "abort"
+debug = false
+lto = true
+
+[workspace]
+resolver = "2"
+members = [
+    "common",
+    "codec",
+    "resample",
+    "capture",
+    "renderer",
+    "nayutacast",
+    "server",
+    "transport",
+    "examples",
+    "discovery",
+    "android/src/main/rust",
+    "app/desktop",
+]
+
+[workspace.dependencies]
+transport = { path = "transport", version = "0.3.1", package = "nayutacast-transport" }
+renderer = { path = "renderer", version = "0.3.1", package = "nayutacast-renderer" }
+discovery = { path = "discovery", version = "0.3.1", package = "nayutacast-discovery" }
+capture = { path = "capture", version = "0.3.1", package = "nayutacast-capture" }
+codec = { path = "codec", version = "0.3.1", package = "nayutacast-codec" }
+resample = { path = "resample", version = "0.3.1", package = "nayutacast-resample" }
+common = { path = "common", version = "0.3.1", package = "nayutacast-common" }
+nayutacast = { path = "nayutacast", version = "0.4.0", package = "nayutacast" }

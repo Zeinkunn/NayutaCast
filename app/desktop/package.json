@@ -1,0 +1,22 @@
+{
+    "name": "nayutacast-desktop",
+    "version": "1.0.0",
+    "description": "Nayutacast desktop application",
+    "type": "module",
+    "main": "build.js",
+    "private": true,
+    "scripts": {
+        "build:debug": "node ./build.js",
+        "build:release": "node ./build.js -- --release"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/nayutacast/nayutacast.git"
+    },
+    "author": "Nayutacast Contributors",
+    "license": "LGPL-2.1-only",
+    "bugs": {
+        "url": "https://github.com/nayutacast/nayutacast/issues"
+    },
+    "homepage": "https://github.com/nayutacast/nayutacast#readme"
+}

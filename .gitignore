@@ -1,0 +1,14 @@
+/target
+*.log
+*.env
+.vscode
+.vs
+.DS_Store
+/build/
+/doc
+/out
+third_party
+/logs/
+node_modules
+package-lock.json
+yarn.lock

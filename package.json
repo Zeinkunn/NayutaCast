@@ -1,0 +1,23 @@
+{
+    "name": "nayutacast",
+    "version": "1.0.0",
+    "description": "Nayutacast - High-performance cross-platform screen casting SDK & app",
+    "main": "build.js",
+    "private": true,
+    "scripts": {
+        "fmt": "cargo +nightly fmt"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/nayutacast/nayutacast.git"
+    },
+    "author": "Nayutacast Contributors",
+    "license": "LGPL-2.1-only",
+    "bugs": {
+        "url": "https://github.com/nayutacast/nayutacast/issues"
+    },
+    "homepage": "https://github.com/nayutacast/nayutacast#readme",
+    "workspaces": [
+        "app/frontend"
+    ]
+}

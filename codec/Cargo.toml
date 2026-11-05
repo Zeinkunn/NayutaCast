@@ -1,0 +1,19 @@
+[package]
+name = "nayutacast-codec"
+version = "0.3.1"
+edition = "2024"
+description = "A cross-platform screen casting library implemented by Rust."
+license = "LGPL-2.1-only"
+readme = "../README.md"
+repository = "https://github.com/nayutacast/nayutacast"
+
+[dependencies]
+log = "0.4"
+thiserror = "2.0"
+common.workspace = true
+ffmpeg = { package = "ffmpeg-sys-next", version = "9.0", default-features = false, features = ["avcodec", "avdevice", "swscale", "swresample"], optional = true }
+
+[features]
+default = ["ffmpeg"]
+ffmpeg = ["dep:ffmpeg"]
+vaapi = []
