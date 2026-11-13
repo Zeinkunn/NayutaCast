@@ -170,8 +170,9 @@ impl VirtualDisplayGuard {
         parse_hypr_monitors_json(&text)
     }
 
-    /// Creates a virtual monitor on supported compositors (Hyprland) if `create_virtual` is true.
-    /// Falls back gracefully to physical monitor selection on other desktops without failing.
+    /// Creates a virtual monitor on supported compositors (Hyprland) if
+    /// `create_virtual` is true. Falls back gracefully to physical monitor
+    /// selection on other desktops without failing.
     pub fn acquire(
         mode: DisplayMode,
         preferred_monitor: Option<&str>,
@@ -279,8 +280,9 @@ impl VirtualDisplayGuard {
     }
 
     /// Returns the preferred screen capture source ID (`wayland_<output>`).
-    /// In Extend mode with a virtual output, captures the virtual display itself.
-    /// In Mirror mode, captures the primary monitor directly so screen content stays live even if mirrored output is occluded.
+    /// In Extend mode with a virtual output, captures the virtual display
+    /// itself. In Mirror mode, captures the primary monitor directly so screen
+    /// content stays live even if mirrored output is occluded.
     pub fn preferred_source_id(&self) -> Option<String> {
         match self.mode {
             DisplayMode::Extend => self

@@ -85,8 +85,8 @@ pub trait AsIMFAttributes {
 
 pub trait MediaFoundationIMFAttributesSetHelper: AsIMFAttributes {
     fn get_string(&self, key: GUID) -> Option<String> {
-        // Gets a wide-character string associated with a key. This method allocates the
-        // memory for the string.
+        // Gets a wide-character string associated with a key. This method
+        // allocates the memory for the string.
         let mut size = 0;
         let mut pwstr = PWSTR::null();
         unsafe {

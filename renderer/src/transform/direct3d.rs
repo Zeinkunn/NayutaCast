@@ -39,8 +39,8 @@ impl Transformer {
         size: Size,
         format: VideoFormat,
     ) -> Result<Self, TransformError> {
-        // Gets the incoming texture properties, the new texture contains only an array
-        // of textures and is a shareable texture resource.
+        // Gets the incoming texture properties, the new texture contains only
+        // an array of textures and is a shareable texture resource.
         let mut d3d11_desc = D3D11_TEXTURE2D_DESC::default();
         d3d11_desc.Width = size.width;
         d3d11_desc.Height = size.height;
@@ -59,8 +59,8 @@ impl Transformer {
             _ => unimplemented!("not supports format={:?}", format),
         };
 
-        // Creates a new texture, which serves as the current texture to be used, and to
-        // which external input textures are updated.
+        // Creates a new texture, which serves as the current texture to be
+        // used, and to which external input textures are updated.
         let mut raw_texture = None;
         unsafe {
             direct3d
@@ -70,8 +70,8 @@ impl Transformer {
 
         let raw_texture = raw_texture.unwrap();
 
-        // Get the texture's shared resources. dx11 textures need to be shared resources
-        // if they are to be used by dx12 devices.
+        // Get the texture's shared resources. dx11 textures need to be shared
+        // resources if they are to be used by dx12 devices.
         let texture = {
             let desc = TextureDescriptor {
                 label: None,

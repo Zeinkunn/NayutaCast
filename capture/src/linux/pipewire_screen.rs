@@ -226,7 +226,8 @@ fn run_pipewire_capture<S: FrameConsumer<Frame = VideoFrame>>(
         fps
     );
 
-    // Keep portal session connection alive for the lifetime of the PipeWire stream.
+    // Keep portal session connection alive for the lifetime of the PipeWire
+    // stream.
     let portal = match start_portal_screencast(&running) {
         Ok(session) => {
             log::info!(
@@ -268,7 +269,8 @@ fn run_pipewire_capture<S: FrameConsumer<Frame = VideoFrame>>(
         return Ok(());
     }
 
-    // Active fallback stream: captures via grim on Wayland or synthetic test pattern
+    // Active fallback stream: captures via grim on Wayland or synthetic test
+    // pattern
     run_fallback_loop(running, width, height, fps, monitor_output, consumer)
 }
 
@@ -844,7 +846,8 @@ fn rgb_to_uv(r: i32, g: i32, b: i32) -> (u8, u8) {
     (u, v)
 }
 
-/// Converts packed 32-bit BGRX/BGRA/RGBX/RGBA buffers (arbitrary stride & optional Y-invert) into NV12.
+/// Converts packed 32-bit BGRX/BGRA/RGBX/RGBA buffers (arbitrary stride &
+/// optional Y-invert) into NV12.
 #[allow(clippy::too_many_arguments)]
 pub fn packed_4byte_to_nv12(
     src: &[u8],

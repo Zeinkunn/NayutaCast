@@ -20,3 +20,6 @@ pub use ffmpeg::{
     AudioResampler, AudioResamplerError, AudioResamplerOutput, AudioSampleDescription,
     AudioSampleFormat,
 };
+
+#[cfg(target_os = "windows")]
+pub mod win32;

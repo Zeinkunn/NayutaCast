@@ -445,6 +445,9 @@ fn start_smart_tv_capture(
     let opts = CaptureOptions {
         video: Some(SourceCaptureOptions {
             description: VideoCaptureSourceDescription {
+                #[cfg(target_os = "windows")]
+                direct3d: common::win32::Direct3DDevice::new()
+                    .map_err(|e| anyhow::anyhow!("Gagal menginisialisasi Direct3D: {:?}", e))?,
                 source,
                 size: Size { width, height },
                 fps,
@@ -579,8 +582,8 @@ impl CastingSession {
         let shared_bg = pipeline_shared.clone();
         let rt_bg = rt.clone();
 
-        // Start Smart TV muxer + capture upfront if first protocol isn't exclusively SRT,
-        // or spin it up on demand after SRT finishes/fails.
+        // Start Smart TV muxer + capture upfront if first protocol isn't
+        // exclusively SRT, or spin it up on demand after SRT finishes/fails.
         let starts_with_srt =
             ordered_protocols.first().copied() == Some(CastProtocol::NayutacastNative);
 
@@ -743,7 +746,8 @@ impl CastingSession {
                 }
             }
 
-            // Give muxer ~350ms to emit initial ftyp+moov & first GOP segment before TV opens URL.
+            // Give muxer ~350ms to emit initial ftyp+moov & first GOP segment
+            // before TV opens URL.
             tokio::time::sleep(Duration::from_millis(350)).await;
             if stopped_bg.load(Ordering::SeqCst) {
                 return;
@@ -857,7 +861,8 @@ impl CastingSession {
             .and_then(|g| g.virtual_output_name().map(|s| s.to_string()))
     }
 
-    /// Switches Mirror / Extend layout live and updates capture output if running Smart TV capture.
+    /// Switches Mirror / Extend layout live and updates capture output if
+    /// running Smart TV capture.
     pub fn set_display_mode(&mut self, mode: DisplayMode) -> anyhow::Result<()> {
         *self.display_mode.lock() = mode;
         let preferred_source = {
@@ -870,7 +875,8 @@ impl CastingSession {
             }
         };
 
-        // If Smart TV capture pipeline is active, switch captured monitor smoothly.
+        // If Smart TV capture pipeline is active, switch captured monitor
+        // smoothly.
         let maybe_tx = self.mux_tx.lock().clone();
         if let Some(tx) = maybe_tx {
             let width = self.settings.resolution_width.max(320) & !1;
@@ -904,7 +910,8 @@ impl CastingSession {
         Ok(())
     }
 
-    /// Switches immediately to Browser `/watch` mode while keeping capture & HTTP stream live.
+    /// Switches immediately to Browser `/watch` mode while keeping capture &
+    /// HTTP stream live.
     pub fn switch_to_browser_mode(&self) {
         let Some(shared) = self.pipeline_shared.lock().clone() else {
             return;
@@ -926,7 +933,8 @@ impl CastingSession {
         });
     }
 
-    /// Re-attempts connection trying alternate protocols on the same live capture pipeline.
+    /// Re-attempts connection trying alternate protocols on the same live
+    /// capture pipeline.
     pub fn retry_other_protocols(&self, excluded_labels: Vec<String>) {
         let Some(shared) = self.pipeline_shared.lock().clone() else {
             return;
@@ -1021,7 +1029,8 @@ mod tests {
     #[tokio::test]
     async fn mock_nayutacast_srt_accepts_receiver_and_counts_client() {
         let _ = transport::startup();
-        // Bind to an ephemeral free TCP/UDP port then release so SRT binds reliably.
+        // Bind to an ephemeral free TCP/UDP port then release so SRT binds
+        // reliably.
         let sock = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = sock.local_addr().unwrap().port();
         drop(sock);

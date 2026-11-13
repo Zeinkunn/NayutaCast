@@ -76,8 +76,9 @@ impl CaptureHandler for PipeWireAudioCapture {
         let mut sources = Vec::new();
         let mut idx = 0;
 
-        // Always expose a PipeWire system audio monitor entry first so desktop playback
-        // can be captured natively via PipeWire STREAM_CAPTURE_SINK without guessing ALSA cards.
+        // Always expose a PipeWire system audio monitor entry first so desktop
+        // playback can be captured natively via PipeWire STREAM_CAPTURE_SINK
+        // without guessing ALSA cards.
         sources.push(Source {
             id: "output:pipewire-monitor".to_string(),
             name: "System Audio (Desktop Monitor)".to_string(),

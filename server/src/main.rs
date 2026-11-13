@@ -34,13 +34,14 @@ fn main() -> Result<()> {
     simple_logger::init_with_level(log::Level::Info)?;
     startup();
 
-    // Parse command line parameters. Note that if the command line parameters are
-    // incorrect, panic will occur.
+    // Parse command line parameters. Note that if the command line parameters
+    // are incorrect, panic will occur.
     let config = Configure::parse();
     log::info!("configure: {:?}", config);
 
-    // Configuration of the srt server. Since this suite only works within the LAN,
-    // the delay is set to the minimum delay without considering network factors.
+    // Configuration of the srt server. Since this suite only works within the
+    // LAN, the delay is set to the minimum delay without considering network
+    // factors.
     let mut opt = TransmissionOptions::default();
     opt.mtu = config.mtu as u32;
     opt.latency = 40;
@@ -61,9 +62,10 @@ fn main() -> Result<()> {
 
                 let socket = Arc::new(socket);
 
-                // Get the stream information carried in the srt link. If the stream information
-                // does not exist or is invalid, the current connection is rejected. Skipping
-                // this step directly will trigger the release of the link and close it.
+                // Get the stream information carried in the srt link. If the
+                // stream information does not exist or is invalid, the current
+                // connection is rejected. Skipping this step directly will
+                // trigger the release of the link and close it.
                 let stream_info = if let Some(info) = stream_id
                     .as_ref()
                     .and_then(|it| StreamInfo::from_str(it).ok())
@@ -82,8 +84,8 @@ fn main() -> Result<()> {
                 );
 
                 {
-                    // If it is a subscriber, add the current connection to the subscription
-                    // connection pool
+                    // If it is a subscriber, add the current connection to the
+                    // subscription connection pool
                     if stream_info.kind == StreamInfoKind::Subscriber {
                         sockets.write().insert(addr, socket.clone());
                         subscribers
@@ -108,8 +110,8 @@ fn main() -> Result<()> {
                                     break;
                                 }
 
-                                // Subscribers are not allowed to write any information to the
-                                // server!
+                                // Subscribers are not allowed to write any
+                                // information to the server!
                                 if stream_info.kind == StreamInfoKind::Subscriber {
                                     break;
                                 }
@@ -120,8 +122,9 @@ fn main() -> Result<()> {
                                     let sockets = sockets.read();
                                     let subscribers = subscribers.read();
 
-                                    // Forwards all packets sent by the publisher to all subscribers
-                                    // of the same channel
+                                    // Forwards all packets sent by the
+                                    // publisher to all subscribers of the same
+                                    // channel
                                     if let Some(items) = subscribers.get(&stream_info.id) {
                                         for addr in items.iter() {
                                             if let Some(socket) = sockets.get(addr) {
@@ -139,7 +142,8 @@ fn main() -> Result<()> {
                                     }
                                 }
 
-                                // Some subscribers have expired, clean up all expired subscribers
+                                // Some subscribers have expired, clean up all
+                                // expired subscribers
                                 if !closed.is_empty() {
                                     let mut sockets = sockets.write();
                                     for addr in &closed {
@@ -166,8 +170,9 @@ fn main() -> Result<()> {
                     let mut sockets = sockets.write();
                     let mut subscribers = subscribers.write();
 
-                    // If the publisher has exited, it is necessary to close all subscribers of the
-                    // current channel and inform the client that the publisher has exited.
+                    // If the publisher has exited, it is necessary to close all
+                    // subscribers of the current channel and inform the client
+                    // that the publisher has exited.
                     if stream_info.kind == StreamInfoKind::Publisher {
                         if let Some(items) = subscribers.remove(&stream_info.id) {
                             for addr in items.iter() {

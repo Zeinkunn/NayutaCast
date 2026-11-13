@@ -77,13 +77,13 @@ impl GraphicsCaptureApiHandler for WindowsCapture {
     ) -> Result<Self, Self::Error> {
         let status: Arc<AtomicBool> = Arc::new(AtomicBool::new(true));
 
-        // Because windows-capture and this library implementation use different devices
-        // and contexts, the problem needs to be solved with an intermediate texture,
-        // for which a cross-device shared resource handle is created, then
-        // windows-capture writes the frame to the intermediate texture, and the
-        // following capture thread creates the texture view from this intermediate
-        // texture as well The following capture thread also creates the texture view
-        // from this intermediate texture.
+        // Because windows-capture and this library implementation use different
+        // devices and contexts, the problem needs to be solved with an
+        // intermediate texture, for which a cross-device shared resource handle
+        // is created, then windows-capture writes the frame to the intermediate
+        // texture, and the following capture thread creates the texture view
+        // from this intermediate texture as well The following capture thread
+        // also creates the texture view from this intermediate texture.
         let (texture, surface) = {
             let desc = D3D11_TEXTURE2D_DESC {
                 Width: flags.source.width()?,
@@ -108,7 +108,8 @@ impl GraphicsCaptureApiHandler for WindowsCapture {
 
             let texture = tex.unwrap();
 
-            // Use as input to VideoResampler by sharing resources across devices.
+            // Use as input to VideoResampler by sharing resources across
+            // devices.
             let surface = flags
                 .options
                 .direct3d
@@ -276,8 +277,8 @@ impl CaptureHandler for ScreenCapture {
             .find(|it| it.device_name().ok() == Some(options.source.id.clone()))
             .ok_or_else(|| ScreenCaptureError::NotFoundScreenSource)?;
 
-        // Start capturing the screen. This runs in a free thread. If it runs in the
-        // current thread, you will encounter problems with Winrt runtime
+        // Start capturing the screen. This runs in a free thread. If it runs in
+        // the current thread, you will encounter problems with Winrt runtime
         // initialization.
         if let Some(control) = self.0.lock().replace(
             WindowsCapture::start_free_threaded(Settings::new(

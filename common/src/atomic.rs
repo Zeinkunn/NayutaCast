@@ -12,8 +12,8 @@ pub trait EasyAtomic {
     /// Update atomic value.
     ///
     /// ```
-    /// use std::sync::atomic::AtomicU8;
     /// use nayutacast_common::atomic::EasyAtomic;
+    /// use std::sync::atomic::AtomicU8;
     ///
     /// let value = AtomicU8::new(1);
     /// assert_eq!(value.set(2), 1);
@@ -24,8 +24,8 @@ pub trait EasyAtomic {
     /// Get atomic value.
     ///
     /// ```
-    /// use std::sync::atomic::AtomicU8;
     /// use nayutacast_common::atomic::EasyAtomic;
+    /// use std::sync::atomic::AtomicU8;
     ///
     /// let value = AtomicU8::new(7);
     /// assert_eq!(value.get(), 7);

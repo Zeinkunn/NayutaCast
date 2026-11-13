@@ -122,7 +122,8 @@ struct WlrState {
 
 impl WlrState {
     fn select_best_spec(&self) -> Option<&PendingBufferSpec> {
-        // Prefer XRGB8888 / ARGB8888 (little-endian BGRx) first, then XBGR8888 / ABGR8888 (RGBx)
+        // Prefer XRGB8888 / ARGB8888 (little-endian BGRx) first, then XBGR8888
+        // / ABGR8888 (RGBx)
         let preferred_order = [
             wl_shm::Format::Xrgb8888,
             wl_shm::Format::Argb8888,
@@ -336,7 +337,8 @@ pub fn run_wlr_screencopy<S: FrameConsumer<Frame = VideoFrame>>(
     }
 
     if let Some(target_name) = monitor_output {
-        // Give newly created HEADLESS-* outputs up to 400ms to announce if needed
+        // Give newly created HEADLESS-* outputs up to 400ms to announce if
+        // needed
         let deadline = Instant::now() + Duration::from_millis(400);
         while !state
             .outputs

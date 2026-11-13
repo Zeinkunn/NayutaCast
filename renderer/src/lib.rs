@@ -132,8 +132,9 @@ impl<'a> Renderer<'a> {
         let device = Arc::new(device);
         let queue = Arc::new(queue);
 
-        // Configure surface as BGRA, BGRA this format compatibility is the best, in
-        // order to unnecessary trouble, directly fixed to BGRA is the best.
+        // Configure surface as BGRA, BGRA this format compatibility is the
+        // best, in order to unnecessary trouble, directly fixed to BGRA is the
+        // best.
         let mut config = surface
             .get_default_config(&adapter, size.width, size.height)
             .ok_or_else(|| GraphicsError::NotFoundSurfaceDefaultConfig)?;
@@ -173,8 +174,9 @@ impl<'a> Renderer<'a> {
             direct3d,
         })?;
 
-        // Present an initial frame so Wayland compositors (Hyprland, Sway, etc.)
-        // map and display the window immediately without waiting for the first stream frame.
+        // Present an initial frame so Wayland compositors (Hyprland, Sway,
+        // etc.) map and display the window immediately without waiting for the
+        // first stream frame.
         if let Ok(output) = surface.get_current_texture() {
             let view = output
                 .texture
@@ -225,10 +227,10 @@ impl<'a> Renderer<'a> {
         self.surface.configure(&self.device, &self.config);
     }
 
-    // Submit the texture to the renderer, it should be noted that the renderer will
-    // not render this texture immediately, the processing flow will enter the
-    // render queue and wait for the queue to automatically schedule the rendering
-    // to the surface.
+    // Submit the texture to the renderer, it should be noted that the renderer
+    // will not render this texture immediately, the processing flow will enter
+    // the render queue and wait for the queue to automatically schedule the
+    // rendering to the surface.
     pub fn submit(&mut self, texture: Texture) -> Result<(), GraphicsError> {
         let mut encoder = self
             .device

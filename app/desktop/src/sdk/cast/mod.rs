@@ -89,8 +89,9 @@ impl ActiveCastBackend {
     }
 }
 
-/// Attempts smart-TV streaming protocols (excluding NayutaCast SRT which uses its own sender)
-/// in priority / preference order and transitions `state` honestly.
+/// Attempts smart-TV streaming protocols (excluding NayutaCast SRT which uses
+/// its own sender) in priority / preference order and transitions `state`
+/// honestly.
 pub async fn connect_smart_tv_protocols(
     ctx: CastContext,
     protocols: &[CastProtocol],
@@ -131,7 +132,8 @@ pub async fn connect_smart_tv_protocols(
                 }
             }
             CastProtocol::BrowserFallback => {
-                // Only use BrowserFallback automatically when NO other TV protocol was listed.
+                // Only use BrowserFallback automatically when NO other TV
+                // protocol was listed.
                 let only_browser = protocols
                     .iter()
                     .all(|p| *p == CastProtocol::BrowserFallback);

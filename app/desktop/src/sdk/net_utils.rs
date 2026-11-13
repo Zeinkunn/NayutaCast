@@ -41,8 +41,8 @@ impl LocalInterface {
     }
 }
 
-/// Classifies an OS interface name into physical `Wifi` or `Lan`, returning `None`
-/// for loopback, container bridges, VPN tunnels, and virtual interfaces.
+/// Classifies an OS interface name into physical `Wifi` or `Lan`, returning
+/// `None` for loopback, container bridges, VPN tunnels, and virtual interfaces.
 pub fn classify_interface_kind(name: &str) -> Option<NetworkKind> {
     let lower = name.to_ascii_lowercase();
     let ignored_prefixes = [
@@ -113,7 +113,8 @@ pub fn list_active_ipv4_interfaces() -> Vec<LocalInterface> {
     out
 }
 
-/// Resolves the best non-loopback local IPv4 address used by the OS to reach `target_ip`.
+/// Resolves the best non-loopback local IPv4 address used by the OS to reach
+/// `target_ip`.
 pub fn resolve_lan_ip_for_target(target_ip: Option<IpAddr>) -> Option<Ipv4Addr> {
     if let Some(IpAddr::V4(target_v4)) = target_ip
         && !target_v4.is_unspecified()
@@ -141,7 +142,8 @@ pub fn resolve_lan_ip_for_target(target_ip: Option<IpAddr>) -> Option<Ipv4Addr> 
         .map(|i| i.ip)
 }
 
-/// Infers whether a peer IP address is reachable over local `Wifi` or `Lan` interface.
+/// Infers whether a peer IP address is reachable over local `Wifi` or `Lan`
+/// interface.
 pub fn infer_network_kind_for_ip(ip: IpAddr, ifaces: &[LocalInterface]) -> NetworkKind {
     if let IpAddr::V4(target_v4) = ip {
         if let Some(local_ip) = resolve_lan_ip_for_target(Some(ip))
@@ -209,7 +211,8 @@ pub fn decode_chunked_body(raw: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Sends a lightweight HTTP/1.1 request over plain TCP (intended for local LAN TV control APIs).
+/// Sends a lightweight HTTP/1.1 request over plain TCP (intended for local LAN
+/// TV control APIs).
 pub async fn http_request(
     method: &str,
     raw_url: &str,

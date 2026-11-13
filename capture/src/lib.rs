@@ -53,7 +53,8 @@ mod linux {
         Thread(#[from] std::io::Error),
     }
 
-    /// Unified screen capture that auto-selects between PipeWire (Wayland) and X11
+    /// Unified screen capture that auto-selects between PipeWire (Wayland) and
+    /// X11
     pub struct ScreenCapture {
         inner: ScreenCaptureInner,
     }

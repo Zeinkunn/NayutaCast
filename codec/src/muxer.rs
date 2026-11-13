@@ -4,8 +4,9 @@ use std::{
     ptr::null_mut,
 };
 
+#[cfg(target_os = "linux")]
+use common::Size;
 use common::{
-    Size,
     codec::VideoEncoderType,
     frame::{AudioFrame, VideoFormat, VideoFrame, VideoSubFormat},
     strings::PSTR,
@@ -13,7 +14,9 @@ use common::{
 use ffmpeg::*;
 use thiserror::Error;
 
-use crate::codec::{CodecType, create_video_context, set_option, set_str_option};
+#[cfg(target_os = "linux")]
+use crate::codec::{CodecType, create_video_context};
+use crate::codec::{set_option, set_str_option};
 
 const VIDEO_TIMEBASE_DEN: i32 = 90_000;
 const HLS_MAX_SEGMENTS: usize = 6;
@@ -325,8 +328,9 @@ impl Drop for ContainerMuxer {
     }
 }
 
-/// Encodes video (H.264 Constrained Baseline/Main) and audio (AAC-LC) once and simultaneously
-/// produces MPEG-TS chunks, rolling in-memory HLS segments/playlist, and fragmented MP4 chunks.
+/// Encodes video (H.264 Constrained Baseline/Main) and audio (AAC-LC) once and
+/// simultaneously produces MPEG-TS chunks, rolling in-memory HLS
+/// segments/playlist, and fragmented MP4 chunks.
 pub struct UniversalLiveMuxer {
     options: LiveMuxerOptions,
     // Video encoder
@@ -447,12 +451,34 @@ impl UniversalLiveMuxer {
         Self::try_open_video_variant(opts, VideoEncoderType::X264)
     }
 
+    fn alloc_x264_codec(ctx: &mut *mut AVCodecContext) -> Result<*const AVCodec, LiveMuxerError> {
+        let c = unsafe { avcodec_find_encoder_by_name(PSTR::from("libx264").as_ptr()) };
+        let c = if c.is_null() {
+            unsafe { avcodec_find_encoder(AVCodecID::AV_CODEC_ID_H264) }
+        } else {
+            c
+        };
+        if c.is_null() {
+            return Err(LiveMuxerError::VideoEncoder(
+                "H.264 encoder not found".into(),
+            ));
+        }
+        *ctx = unsafe { avcodec_alloc_context3(c) };
+        if ctx.is_null() {
+            return Err(LiveMuxerError::VideoEncoder(
+                "avcodec_alloc_context3 failed".into(),
+            ));
+        }
+        Ok(c)
+    }
+
     fn try_open_video_variant(
         opts: &LiveMuxerOptions,
         codec_kind: VideoEncoderType,
     ) -> Result<(*mut AVCodecContext, *mut AVFrame, *mut AVFrame, bool), LiveMuxerError> {
         let mut ctx: *mut AVCodecContext = null_mut();
-        let codec = if cfg!(target_os = "linux") && codec_kind == VideoEncoderType::Vaapi {
+        #[cfg(target_os = "linux")]
+        let codec = if codec_kind == VideoEncoderType::Vaapi {
             create_video_context(
                 &mut ctx,
                 CodecType::Encoder(VideoEncoderType::Vaapi),
@@ -463,24 +489,12 @@ impl UniversalLiveMuxer {
             )
             .map_err(|e| LiveMuxerError::VideoEncoder(e.to_string()))?
         } else {
-            let c = unsafe { avcodec_find_encoder_by_name(PSTR::from("libx264").as_ptr()) };
-            let c = if c.is_null() {
-                unsafe { avcodec_find_encoder(AVCodecID::AV_CODEC_ID_H264) }
-            } else {
-                c
-            };
-            if c.is_null() {
-                return Err(LiveMuxerError::VideoEncoder(
-                    "H.264 encoder not found".into(),
-                ));
-            }
-            ctx = unsafe { avcodec_alloc_context3(c) };
-            if ctx.is_null() {
-                return Err(LiveMuxerError::VideoEncoder(
-                    "avcodec_alloc_context3 failed".into(),
-                ));
-            }
-            c
+            Self::alloc_x264_codec(&mut ctx)?
+        };
+        #[cfg(not(target_os = "linux"))]
+        let codec = {
+            let _ = codec_kind;
+            Self::alloc_x264_codec(&mut ctx)?
         };
 
         let using_vaapi = cfg!(target_os = "linux") && codec_kind == VideoEncoderType::Vaapi;
@@ -659,7 +673,8 @@ impl UniversalLiveMuxer {
             .map(|(_, _, data)| data.as_slice())
     }
 
-    /// Pushes interleaved stereo S16 audio frames into the AAC FIFO and emits encoded packets.
+    /// Pushes interleaved stereo S16 audio frames into the AAC FIFO and emits
+    /// encoded packets.
     pub fn push_audio(&mut self, frame: &AudioFrame) -> Result<MuxerOutput, LiveMuxerError> {
         if frame.data.is_null() || frame.frames == 0 {
             return Ok(MuxerOutput::default());
@@ -676,8 +691,8 @@ impl UniversalLiveMuxer {
         Ok(out)
     }
 
-    /// Pushes one video frame (NV12 or I420 SW), pads silence if audio lags behind video PTS,
-    /// and returns newly produced MPEG-TS / fMP4 outputs.
+    /// Pushes one video frame (NV12 or I420 SW), pads silence if audio lags
+    /// behind video PTS, and returns newly produced MPEG-TS / fMP4 outputs.
     pub fn push_video(&mut self, frame: &VideoFrame) -> Result<MuxerOutput, LiveMuxerError> {
         if frame.sub_format != VideoSubFormat::SW || frame.data[0].is_null() {
             return Ok(MuxerOutput::default());
@@ -784,7 +799,8 @@ impl UniversalLiveMuxer {
         is_key: bool,
         out: &mut MuxerOutput,
     ) -> Result<(), LiveMuxerError> {
-        // Rotate HLS segment cleanly on keyframe boundary after at least 1.0s of video.
+        // Rotate HLS segment cleanly on keyframe boundary after at least 1.0s
+        // of video.
         if is_video
             && is_key
             && self.hls_cur_video_frames >= self.options.fps as u64

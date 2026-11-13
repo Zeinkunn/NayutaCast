@@ -315,9 +315,9 @@ pub mod nv12 {
             &'a self,
             texture: Option<&'a Texture>,
         ) -> impl IntoIterator<Item = (&'a Texture, TextureFormat, TextureAspect)> {
-            // When you create a view directly for a texture, the external texture is a
-            // single texture, and you need to create different planes of views on top of
-            // the single texture.
+            // When you create a view directly for a texture, the external
+            // texture is a single texture, and you need to create different
+            // planes of views on top of the single texture.
             if let Some(texture) = texture {
                 [
                     (texture, TextureFormat::R8Unorm, TextureAspect::Plane0),

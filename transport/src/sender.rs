@@ -62,8 +62,8 @@ impl Drop for Sender {
 fn create_multicast_sender(addr: SocketAddr, mtu: usize) -> Result<Sender, Error> {
     let sender = Sender::default();
 
-    // Create a multicast sender, the port is automatically assigned an idle port by
-    // the system
+    // Create a multicast sender, the port is automatically assigned an idle
+    // port by the system
     let mut server = MulticastServer::new(
         match addr.ip() {
             IpAddr::V4(v4) => v4,
@@ -165,8 +165,8 @@ fn create_relay_sender(addr: SocketAddr, mtu: usize) -> Result<Sender, Error> {
                         buf,
                     );
 
-                    // SRT does not perform data fragmentation. It needs to be split
-                    // into fragments that do not exceed
+                    // SRT does not perform data fragmentation. It needs to be
+                    // split into fragments that do not exceed
                     // the MTU size.
                     for chunk in encoder.encode(&payload) {
                         if let Err(e) = server.send(chunk) {
@@ -196,8 +196,9 @@ fn create_direct_sender(addr: SocketAddr, mtu: usize) -> Result<Sender, Error> {
         HashMap::<SocketAddr, TransmissionSocket>::with_capacity(10),
     ));
 
-    // Configuration of the srt server. Since this suite only works within the LAN,
-    // the delay is set to the minimum delay without considering network factors.
+    // Configuration of the srt server. Since this suite only works within the
+    // LAN, the delay is set to the minimum delay without considering network
+    // factors.
     let mut opt = TransmissionOptions::default();
     opt.mtu = mtu as u32;
     opt.latency = 20;
@@ -256,8 +257,8 @@ fn create_direct_sender(addr: SocketAddr, mtu: usize) -> Result<Sender, Error> {
                         buf,
                     );
 
-                    // SRT does not perform data fragmentation. It needs to be split
-                    // into fragments that do not exceed
+                    // SRT does not perform data fragmentation. It needs to be
+                    // split into fragments that do not exceed
                     // the MTU size.
                     for chunk in encoder.encode(&payload) {
                         {

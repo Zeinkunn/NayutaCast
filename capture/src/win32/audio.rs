@@ -51,15 +51,17 @@ impl CaptureHandler for AudioCapture {
     type Error = AudioCaptureError;
     type CaptureOptions = AudioCaptureSourceDescription;
 
-    // Get the default input device. In theory, all microphones will be listed here.
+    // Get the default input device. In theory, all microphones will be listed
+    // here.
     fn get_sources() -> Result<Vec<Source>, Self::Error> {
         let default_name = HOST
             .default_output_device()
             .map(|it| it.name().ok())
             .flatten();
 
-        // If you ever need to switch back to recording, you just need to capture the
-        // output device, which is really funny, but very simple and worth mentioning!
+        // If you ever need to switch back to recording, you just need to
+        // capture the output device, which is really funny, but very simple and
+        // worth mentioning!
         let mut sources = Vec::with_capacity(20);
         for (index, device) in HOST
             .output_devices()?
@@ -125,9 +127,10 @@ impl CaptureHandler for AudioCapture {
         let stream = device.build_input_stream(
             &config,
             move |data: &[i16], _| {
-                // When any problem occurs in the process, you should not continue processing.
-                // If the cpal bottom layer continues to push audio samples, it should be
-                // ignored here and the process should not continue.
+                // When any problem occurs in the process, you should not
+                // continue processing. If the cpal bottom layer continues to
+                // push audio samples, it should be ignored here and the process
+                // should not continue.
                 if !playing {
                     return;
                 }
@@ -137,8 +140,8 @@ impl CaptureHandler for AudioCapture {
                 }
             },
             |e| {
-                // An error has occurred, but there is nothing you can do at this moment except
-                // output the error log.
+                // An error has occurred, but there is nothing you can do at
+                // this moment except output the error log.
                 log::error!("audio capture callback error={:?}", e);
             },
             None,
@@ -147,8 +150,8 @@ impl CaptureHandler for AudioCapture {
         stream.play()?;
 
         // If there is a previous stream, end it first.
-        // Normally, a Capture instance is only used once, but here a defensive process
-        // is done to avoid multiple calls due to external errors.
+        // Normally, a Capture instance is only used once, but here a defensive
+        // process is done to avoid multiple calls due to external errors.
         if let Some(stream) = self.0.lock().replace(stream) {
             stream.pause()?;
         }

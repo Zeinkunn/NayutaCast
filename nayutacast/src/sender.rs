@@ -132,9 +132,9 @@ where
     fn send(&mut self, frame: &VideoFrame) -> bool {
         // Push the audio and video frames into the encoder.
         if self.encoder.update(frame) {
-            // Try to get the encoded data packets. The audio and video frames do not
-            // correspond to the data packets one by one, so you need to try to get
-            // multiple packets until they are empty.
+            // Try to get the encoded data packets. The audio and video frames
+            // do not correspond to the data packets one by one, so you need to
+            // try to get multiple packets until they are empty.
             if let Err(e) = self.encoder.encode() {
                 log::error!("video encode error={:?}", e);
 
@@ -226,9 +226,10 @@ where
     ) -> Result<Self, NayutacastSenderError> {
         let adapter = transport.get_adapter();
 
-        // Create an opus header data. The opus decoder needs this data to obtain audio
-        // information. Here, actively add an opus header information to the queue, and
-        // the adapter layer will automatically cache it.
+        // Create an opus header data. The opus decoder needs this data to
+        // obtain audio information. Here, actively add an opus header
+        // information to the queue, and the adapter layer will automatically
+        // cache it.
         adapter.send(
             package_copy_from_slice(&create_opus_identification_header(
                 2,
@@ -271,8 +272,8 @@ where
 
                     return false;
                 } else {
-                    // Try to get the encoded data packets. The audio and video frames
-                    // do not correspond to the data
+                    // Try to get the encoded data packets. The audio and video
+                    // frames do not correspond to the data
                     // packets one by one, so you need to try to get
                     // multiple packets until they are empty.
                     while let Some((buffer, flags, timestamp)) = self.encoder.read() {
@@ -353,9 +354,9 @@ where
     S: MediaStreamSink + 'static,
     O: MediaStreamObserver + 'static,
 {
-    // Create a sender. The capture of the sender is started following the sender,
-    // but both video capture and audio capture can be empty, which means you can
-    // create a sender that captures nothing.
+    // Create a sender. The capture of the sender is started following the
+    // sender, but both video capture and audio capture can be empty, which
+    // means you can create a sender that captures nothing.
     pub(crate) fn new(
         options: &NayutacastSenderOptions,
         sink: S,
@@ -487,10 +488,11 @@ where
         if !self.status.get() {
             self.status.set(true);
 
-            // When the sender releases, the cleanup work should be done, but there is a
-            // more troublesome point here. If it is actively released by the outside, it
-            // will also call back to the external closing event. It stands to reason that
-            // it should be distinguished whether it is an active closure, but in order to
+            // When the sender releases, the cleanup work should be done, but
+            // there is a more troublesome point here. If it is actively
+            // released by the outside, it will also call back to the external
+            // closing event. It stands to reason that it should be
+            // distinguished whether it is an active closure, but in order to
             // make it simpler to implement, let's do it this way first.
             if let Err(e) = self.capture.close() {
                 log::warn!("nayutacast sender capture close error={:?}", e);

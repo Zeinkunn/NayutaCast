@@ -39,8 +39,8 @@ pub fn startup() -> Result<(), NayutacastError> {
         log::warn!("{:?}", e);
     }
 
-    // In order to prevent other programs from affecting the delay performance of
-    // the current program, set the priority of the current process to high.
+    // In order to prevent other programs from affecting the delay performance
+    // of the current program, set the priority of the current process to high.
     #[cfg(target_os = "windows")]
     if set_process_priority(ProcessPriority::High).is_err() {
         log::error!(

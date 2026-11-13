@@ -16,7 +16,8 @@ use crate::sdk::{
     discovery::{DeviceInfo, DeviceManager},
 };
 
-/// Thread-safe handle wrapping a running `NayutacastSender` on a dedicated owner thread.
+/// Thread-safe handle wrapping a running `NayutacastSender` on a dedicated
+/// owner thread.
 pub struct SrtSenderHandle {
     pub description: MediaStreamDescription,
     pub client_count: Arc<AtomicUsize>,
@@ -71,7 +72,8 @@ impl NayutacastCastSession {
         };
 
         let mut desc = handle.description.clone();
-        // Never advertise 0.0.0.0 inside ServiceMessage; always publish reachable LAN IPv4.
+        // Never advertise 0.0.0.0 inside ServiceMessage; always publish
+        // reachable LAN IPv4.
         let fixed_addr = SocketAddr::new(IpAddr::V4(lan_ip), srt_port);
         desc.transport.strategy = match desc.transport.strategy {
             TransportStrategy::Direct(addr) => {
@@ -101,7 +103,8 @@ impl NayutacastCastSession {
             browser_url: browser_url.clone(),
         };
 
-        // Re-announce once after 1s and wait up to 8s for actual SRT accept (client_count() > 0).
+        // Re-announce once after 1s and wait up to 8s for actual SRT accept
+        // (client_count() > 0).
         let mut connected = false;
         for step in 0..40 {
             if step == 5 {

@@ -111,12 +111,13 @@ impl<T: FrameConsumer<Frame = VideoFrame>> Context<T> {
             return Err(CameraCaptureError::CaptureIsStoped);
         }
 
-        // Converts a sample with multiple buffers into a sample with a single buffer.
+        // Converts a sample with multiple buffers into a sample with a single
+        // buffer.
         let buffer = unsafe { sample.ConvertToContiguousBuffer()? };
 
-        // If the buffer contains 2-D image data (such as an uncompressed video frame),
-        // you should query the buffer for the IMF2DBuffer interface. The methods on
-        // IMF2DBuffer are optimized for 2-D data.
+        // If the buffer contains 2-D image data (such as an uncompressed video
+        // frame), you should query the buffer for the IMF2DBuffer interface.
+        // The methods on IMF2DBuffer are optimized for 2-D data.
         let texture = buffer.cast::<IMF2DBuffer>()?;
 
         // Gives the caller access to the memory in the buffer.

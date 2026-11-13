@@ -138,7 +138,8 @@ impl DlnaSession {
             message: format!("Menghubungi {} via UPnP AVTransport...", ctx.device.name),
         };
 
-        // Query GetProtocolInfo when available to prioritize supported MIME profiles.
+        // Query GetProtocolInfo when available to prioritize supported MIME
+        // profiles.
         let mut sink_info = String::new();
         if let Some(cm) = cm_ctrl
             && let Ok(res) = send_soap_action(
@@ -240,7 +241,8 @@ impl DlnaSession {
             browser_url: ctx.browser_url(),
         };
 
-        // Wait up to 8s verifying that TV actually starts pulling HTTP stream or enters PLAYING.
+        // Wait up to 8s verifying that TV actually starts pulling HTTP stream
+        // or enters PLAYING.
         let mut verified = false;
         for _ in 0..32 {
             if ctx.hub.active_clients() > 0 && ctx.hub.bytes_served() > 0 {

@@ -30,7 +30,8 @@ pub enum VideoDecoderType {
     VideoToolBox,
     /// [VAAPI](https://en.wikipedia.org/wiki/Video_Acceleration_API)
     ///
-    /// Video Acceleration API (VA-API) for hardware acceleration on Linux (Intel/AMD).
+    /// Video Acceleration API (VA-API) for hardware acceleration on Linux
+    /// (Intel/AMD).
     Vaapi,
 }
 
@@ -84,7 +85,8 @@ pub enum VideoEncoderType {
     VideoToolBox,
     /// [VAAPI](https://en.wikipedia.org/wiki/Video_Acceleration_API)
     ///
-    /// Video Acceleration API (VA-API) for hardware acceleration on Linux (Intel/AMD).
+    /// Video Acceleration API (VA-API) for hardware acceleration on Linux
+    /// (Intel/AMD).
     Vaapi,
 }
 

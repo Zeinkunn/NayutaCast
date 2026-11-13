@@ -222,7 +222,8 @@ pub struct ParsedUpnpDevice {
     pub has_dial: bool,
 }
 
-/// Parses a UPnP/SSDP `device-desc.xml` document and filters out routers/modems/gateways.
+/// Parses a UPnP/SSDP `device-desc.xml` document and filters out
+/// routers/modems/gateways.
 pub fn parse_upnp_device_xml(location_url: &str, xml_body: &str) -> Option<ParsedUpnpDevice> {
     let doc = roxmltree::Document::parse(xml_body).ok()?;
     let base_url = Url::parse(location_url).ok()?;
@@ -343,7 +344,8 @@ pub struct ParsedMdnsService {
     pub protocol: CastProtocol,
 }
 
-/// Decodes raw mDNS wire response bytes (`_googlecast._tcp.local.` & `_airplay._tcp.local.`).
+/// Decodes raw mDNS wire response bytes (`_googlecast._tcp.local.` &
+/// `_airplay._tcp.local.`).
 pub fn parse_mdns_response(pkt: &[u8]) -> Vec<ParsedMdnsService> {
     if pkt.len() < 12 {
         return Vec::new();
@@ -674,7 +676,8 @@ impl DeviceManager {
         *self.local_name.write().await = name.to_string();
     }
 
-    /// Initializes the persistent libp2p NayutaCast discovery service on `nayutacast-app-core`.
+    /// Initializes the persistent libp2p NayutaCast discovery service on
+    /// `nayutacast-app-core`.
     pub async fn ensure_p2p_started(&self) {
         if self.service.read().await.is_some() {
             return;
@@ -696,7 +699,8 @@ impl DeviceManager {
         }
     }
 
-    /// Broadcasts a `ServiceMessage` over Gossipsub so NayutaCast receivers can connect to our SRT stream.
+    /// Broadcasts a `ServiceMessage` over Gossipsub so NayutaCast receivers can
+    /// connect to our SRT stream.
     pub async fn announce_stream(
         &self,
         target_peer_id: Option<&str>,
@@ -725,7 +729,8 @@ impl DeviceManager {
         Ok(())
     }
 
-    /// Checks whether a given network kind (`Wifi` / `Lan`) has at least one active interface.
+    /// Checks whether a given network kind (`Wifi` / `Lan`) has at least one
+    /// active interface.
     #[allow(dead_code)]
     pub async fn has_active_interface(&self, kind: DeviceKind) -> bool {
         self.ifaces_snapshot
@@ -978,7 +983,8 @@ impl DeviceManager {
             }
         }
 
-        // Add bounded /24 neighbors for active Wi-Fi/LAN subnets so asleep TVs with empty ARP are still found.
+        // Add bounded /24 neighbors for active Wi-Fi/LAN subnets so asleep TVs
+        // with empty ARP are still found.
         for iface in &ifaces {
             let octets = iface.ip.octets();
             if octets[0] == 172 && (16..=31).contains(&octets[1]) {
@@ -1112,13 +1118,15 @@ impl DeviceManager {
             protocols.push(CastProtocol::DlnaAvTransport);
         }
         if p8080 && !protocols.contains(&CastProtocol::NayutacastNative) {
-            // NayutaCast listener or HTTP renderer; only add Native if P2P already confirmed OR explicit override
+            // NayutaCast listener or HTTP renderer; only add Native if P2P
+            // already confirmed OR explicit override
             if protocol_override == Some(CastProtocol::NayutacastNative) {
                 protocols.push(CastProtocol::NayutacastNative);
             }
         }
 
-        // Unicast SSDP discovery fallback when custom IP is probed or DLNA port is hidden on ephemeral port.
+        // Unicast SSDP discovery fallback when custom IP is probed or DLNA port
+        // is hidden on ephemeral port.
         if is_custom
             && av_ctrl.is_none()
             && let Some(dlna) = Self::unicast_ssdp_probe(ip).await
@@ -1220,7 +1228,8 @@ impl DeviceManager {
         None
     }
 
-    /// Probes a user-entered IP and registers it immediately with full protocol metadata.
+    /// Probes a user-entered IP and registers it immediately with full protocol
+    /// metadata.
     pub async fn probe_and_add_custom(
         &self,
         ip: IpAddr,
@@ -1271,7 +1280,8 @@ impl DeviceManager {
         list
     }
 
-    /// Non-blocking UI snapshot helpers used by `eframe::App::ui` on every frame.
+    /// Non-blocking UI snapshot helpers used by `eframe::App::ui` on every
+    /// frame.
     pub fn list_nonblocking(&self, kind: DeviceKind) -> Option<Vec<DeviceInfo>> {
         let guard = self.devices.try_read().ok()?;
         let mut list: Vec<DeviceInfo> = guard

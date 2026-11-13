@@ -161,9 +161,9 @@ impl Sender {
             (),
         )?;
 
-        // Register the current sender's information with the LAN discovery service so
-        // that other receivers can know that the sender has been created and can access
-        // the sender's information.
+        // Register the current sender's information with the LAN discovery
+        // service so that other receivers can know that the sender has been
+        // created and can access the sender's information.
         let discovery = get_runtime_handle().block_on(DiscoveryService::new(
             "nayutacast-example".to_string(),
             Observer {
@@ -188,8 +188,8 @@ impl Receiver {
     ) -> Result<Self> {
         let video_decoder = configure.decoder;
 
-        // The sender, if using passthrough, will need to replace the ip in the publish
-        // address by replacing the ip address with the sender's ip.
+        // The sender, if using passthrough, will need to replace the ip in the
+        // publish address by replacing the ip address with the sender's ip.
         if let TransportStrategy::Direct(addr) = &mut description.transport.strategy {
             addr.set_ip(IpAddr::V4(ip));
         }
@@ -527,8 +527,8 @@ fn main() -> Result<()> {
 
     event_loop.run_app(&mut App::new(proxy))?;
 
-    // When exiting the application, the environment of nayutacast should be cleaned
-    // up.
+    // When exiting the application, the environment of nayutacast should be
+    // cleaned up.
     shutdown()?;
     Ok(())
 }

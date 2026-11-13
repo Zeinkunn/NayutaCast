@@ -125,8 +125,8 @@ impl AudioDecoder {
                 )
             };
 
-            // When parsing the code stream, an abnormal return code appears and processing
-            // should not be continued.
+            // When parsing the code stream, an abnormal return code appears and
+            // processing should not be continued.
             if len < 0 {
                 return Err(AudioDecoderError::ParsePacketError);
             }

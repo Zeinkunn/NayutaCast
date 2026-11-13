@@ -157,12 +157,12 @@ where
                             break;
                         }
 
-                        // All the fragments received from SRT are split and need to be
-                        // reassembled here
+                        // All the fragments received from SRT are split and
+                        // need to be reassembled here
                         if let Some((seq, bytes)) = decoder.decode(&buf[..size]) {
                             if let Some(adapter) = adapter_.upgrade() {
-                                // Check whether the sequence number is continuous, in
-                                // order to
+                                // Check whether the sequence number is
+                                // continuous, in order to
                                 // check whether packet loss has
                                 // occurred
                                 if seq == 0 || seq - 1 == sequence {

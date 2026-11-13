@@ -103,8 +103,8 @@ trait Texture2DSample {
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: TextureDimension::D2,
-                    // The textures created here are all needed to allow external writing of data,
-                    // and all need the COPY_DST flag.
+                    // The textures created here are all needed to allow
+                    // external writing of data, and all need the COPY_DST flag.
                     usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
                     view_formats: &[],
                     size: Extent3d {
@@ -211,7 +211,8 @@ trait Texture2DSample {
                     offset: 0,
                     // Bytes per "row" in an image.
                     //
-                    // A row is one row of pixels or of compressed blocks in the x direction.
+                    // A row is one row of pixels or of compressed blocks in the
+                    // x direction.
                     bytes_per_row: Some(size.width),
                     rows_per_image: Some(size.height),
                 },

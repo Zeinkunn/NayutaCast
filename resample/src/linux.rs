@@ -1,7 +1,7 @@
 //! Linux audio resampling using native libraries
 //!
-//! This module provides audio resampling functionality for Linux without FFmpeg dependency.
-//! It can use either:
+//! This module provides audio resampling functionality for Linux without FFmpeg
+//! dependency. It can use either:
 //! - libsamplerate (high quality, CPU-based)
 //! - speexdsp (lower quality, faster)
 //! - Simple linear interpolation (fastest, lowest quality)
@@ -57,7 +57,8 @@ pub trait SampleFromF32: Copy + Default + Send + 'static {
     fn from_f32(v: f32) -> Self;
 }
 
-/// Audio resampler using linear interpolation (simple, no external dependencies)
+/// Audio resampler using linear interpolation (simple, no external
+/// dependencies)
 ///
 /// This is a basic implementation for Linux. For better quality, consider using
 /// libsamplerate or speexdsp bindings.

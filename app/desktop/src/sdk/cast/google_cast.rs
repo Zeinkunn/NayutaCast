@@ -499,7 +499,8 @@ mod tests {
             payload_binary: None,
         };
         let encoded = msg.encode_to_vec();
-        // Required tag 1 = 0 must appear as [0x08, 0x00]; required tag 5 = 0 must appear as [0x28, 0x00].
+        // Required tag 1 = 0 must appear as [0x08, 0x00]; required tag 5 = 0
+        // must appear as [0x28, 0x00].
         assert!(
             encoded.windows(2).any(|w| w == [0x08, 0x00]),
             "missing protocol_version tag 1"

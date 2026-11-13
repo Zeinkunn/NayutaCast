@@ -24,8 +24,8 @@ impl Dequeue {
     /// It should be noted that you can ignore the order or whether there are
     /// duplicates, and the internal processing can be normal.
     pub fn push(&mut self, packet: Fragment) {
-        // Check whether the current sequence number has been dequeued. If so, do not
-        // process it.
+        // Check whether the current sequence number has been dequeued. If so,
+        // do not process it.
         if !(self.last_queue >= u64::MAX - 100 && packet.chunk_sequence <= 100)
             && self.last_queue >= packet.chunk_sequence
         {

@@ -321,7 +321,8 @@ fn run_x11_capture<S: FrameConsumer<Frame = VideoFrame>>(
     Ok(())
 }
 
-/// Convert BGRA pixel buffer into target NV12 planar buffer with fast nearest-neighbor scaling.
+/// Convert BGRA pixel buffer into target NV12 planar buffer with fast
+/// nearest-neighbor scaling.
 pub fn bgra_to_nv12(
     src_bgra: &[u8],
     src_w: usize,

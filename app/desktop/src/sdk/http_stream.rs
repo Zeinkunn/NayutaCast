@@ -25,7 +25,8 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Shared live media hub fed by `UniversalLiveMuxer` and served over HTTP to Smart TVs.
+/// Shared live media hub fed by `UniversalLiveMuxer` and served over HTTP to
+/// Smart TVs.
 pub struct StreamHub {
     open_stream_clients: AtomicUsize,
     last_hls_activity_ms: AtomicU64,
@@ -78,7 +79,8 @@ impl StreamHub {
         self.stopped.store(true, Ordering::SeqCst);
     }
 
-    /// Synchronizes freshly encoded TS / fMP4 / HLS outputs from `UniversalLiveMuxer`.
+    /// Synchronizes freshly encoded TS / fMP4 / HLS outputs from
+    /// `UniversalLiveMuxer`.
     pub async fn sync_from_muxer(&self, muxer: &UniversalLiveMuxer, out: codec::MuxerOutput) {
         if self.fmp4_init.read().await.is_empty() && !muxer.fmp4_init_segment().is_empty() {
             *self.fmp4_init.write().await = muxer.fmp4_init_segment().to_vec();
@@ -117,7 +119,8 @@ impl StreamHub {
         }
     }
 
-    /// Directly seeds test/synthetic media bytes (used by unit/integration tests).
+    /// Directly seeds test/synthetic media bytes (used by unit/integration
+    /// tests).
     #[allow(dead_code)]
     pub async fn publish_raw_test_stream(
         &self,
@@ -268,7 +271,8 @@ async fn handle_client(stream: TcpStream, hub: Arc<StreamHub>) -> anyhow::Result
             let _guard = ClientGuard::new(hub.clone());
             let mut rx = hub.ts_tx.subscribe();
 
-            // Wait briefly for initial keyframe GOP prefix if stream just started.
+            // Wait briefly for initial keyframe GOP prefix if stream just
+            // started.
             for _ in 0..25 {
                 if !hub.mpegts_gop_prefix.read().await.is_empty()
                     || hub.stopped.load(Ordering::SeqCst)

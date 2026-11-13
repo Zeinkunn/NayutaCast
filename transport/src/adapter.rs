@@ -37,9 +37,10 @@ struct PacketFilter {
 
 impl PacketFilter {
     fn filter(&self, flag: i32, keyframe: bool) -> bool {
-        // First check whether the decoder has been initialized. Here, it is judged
-        // whether the configuration information has consumer. If the configuration
-        // information has consumer, the decoder initialization is marked as completed.
+        // First check whether the decoder has been initialized. Here, it is
+        // judged whether the configuration information has consumer. If the
+        // configuration information has consumer, the decoder initialization is
+        // marked as completed.
         if !self.initialized.get() {
             if flag != BufferFlag::Config as i32 {
                 return false;
@@ -49,19 +50,20 @@ impl PacketFilter {
             return true;
         }
 
-        // The configuration information only needs to be filled into the decoder once.
-        // If it has been initialized, it means that the configuration information has
-        // been received. It is meaningless to receive it again later. Here, duplicate
-        // configuration information is filtered out.
+        // The configuration information only needs to be filled into the
+        // decoder once. If it has been initialized, it means that the
+        // configuration information has been received. It is meaningless to
+        // receive it again later. Here, duplicate configuration information is
+        // filtered out.
         if flag == BufferFlag::Config as i32 {
             return false;
         }
 
         // The audio does not have keyframes
         if keyframe {
-            // Check whether the current stream is in a readable state. When packet loss
-            // occurs, the entire stream should be paused and wait for the next key frame to
-            // arrive.
+            // Check whether the current stream is in a readable state. When
+            // packet loss occurs, the entire stream should be paused and wait
+            // for the next key frame to arrive.
             if !self.readable.get() {
                 if flag == BufferFlag::KeyFrame as i32 {
                     self.readable.set(true);
@@ -171,7 +173,8 @@ impl StreamSenderAdapter {
                     self.config.video.swap(Some(buf.clone()));
                 }
 
-                // Add SPS and PPS units in front of each keyframe (only use android)
+                // Add SPS and PPS units in front of each keyframe (only use
+                // android)
                 if flags == BufferFlag::KeyFrame as i32 {
                     if let Some(config) = self.config.video.get() {
                         if !self.channel.send(Some((

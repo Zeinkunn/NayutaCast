@@ -37,7 +37,8 @@ pub fn render_casting(
     ui_state: &mut CastingUiState,
     preview_tex: &mut Option<TextureHandle>,
 ) -> CastingAction {
-    // Continuously repaint for pulsing status dot and live screen preview frames
+    // Continuously repaint for pulsing status dot and live screen preview
+    // frames
     ui.ctx().request_repaint();
 
     let mut action = CastingAction {
@@ -54,7 +55,8 @@ pub fn render_casting(
     let available_w = ui.available_width();
     let available_h = ui.available_height();
 
-    // Reserve extra space when error / browser URL actions are shown below the monitor
+    // Reserve extra space when error / browser URL actions are shown below the
+    // monitor
     let reserve_h = if is_failed {
         195.0
     } else if is_waiting {
@@ -169,7 +171,8 @@ pub fn render_casting(
 
         ui.add_space(12.0);
 
-        // 2. Honest Status Line based on CastingState (concise so it never clips)
+        // 2. Honest Status Line based on CastingState (concise so it never
+        //    clips)
         let elapsed = session.start_time.elapsed().as_secs_f32();
         let pulse_r = if is_failed {
             5.0
