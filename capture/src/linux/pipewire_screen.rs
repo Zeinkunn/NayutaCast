@@ -1,6 +1,4 @@
-use crate::{
-    CaptureHandler, FrameConsumer, Source, SourceType, VideoCaptureSourceDescription,
-};
+use crate::{CaptureHandler, FrameConsumer, Source, SourceType, VideoCaptureSourceDescription};
 
 use std::{
     collections::HashMap,
@@ -67,7 +65,10 @@ impl CaptureHandler for PipeWireScreenCapture {
     fn get_sources() -> Result<Vec<Source>, Self::Error> {
         let mut sources = Vec::new();
         // Detect monitors via hyprctl monitors if on Hyprland / Wayland
-        if let Ok(output) = std::process::Command::new("hyprctl").arg("monitors").output() {
+        if let Ok(output) = std::process::Command::new("hyprctl")
+            .arg("monitors")
+            .output()
+        {
             if output.status.success() {
                 if let Ok(text) = std::str::from_utf8(&output.stdout) {
                     let mut current_name = None;
@@ -75,7 +76,9 @@ impl CaptureHandler for PipeWireScreenCapture {
                     for line in text.lines() {
                         let trimmed = line.trim();
                         if trimmed.starts_with("Monitor ") {
-                            if let (Some(name), Some(res)) = (current_name.take(), current_res.take()) {
+                            if let (Some(name), Some(res)) =
+                                (current_name.take(), current_res.take())
+                            {
                                 let idx = sources.len();
                                 sources.push(Source {
                                     id: format!("wayland_{}", name),
@@ -89,7 +92,10 @@ impl CaptureHandler for PipeWireScreenCapture {
                                 let name = part.split_whitespace().next().unwrap_or("");
                                 current_name = Some(name.to_string());
                             }
-                        } else if trimmed.contains(" at ") && current_name.is_some() && current_res.is_none() {
+                        } else if trimmed.contains(" at ")
+                            && current_name.is_some()
+                            && current_res.is_none()
+                        {
                             let res = trimmed.split('@').next().unwrap_or("").trim();
                             current_res = Some(res.to_string());
                         }
@@ -137,8 +143,17 @@ impl CaptureHandler for PipeWireScreenCapture {
         let fps = options.fps.max(1);
 
         let monitor_output = if options.source.id.starts_with("wayland_") {
-            let name = options.source.id.strip_prefix("wayland_").unwrap_or("").to_string();
-            if name == "all" || name == "default" { None } else { Some(name) }
+            let name = options
+                .source
+                .id
+                .strip_prefix("wayland_")
+                .unwrap_or("")
+                .to_string();
+            if name == "all" || name == "default" {
+                None
+            } else {
+                Some(name)
+            }
         } else {
             None
         };
@@ -146,7 +161,9 @@ impl CaptureHandler for PipeWireScreenCapture {
         let handle = thread::Builder::new()
             .name("PipeWireScreenCapture".to_string())
             .spawn(move || {
-                if let Err(e) = run_pipewire_capture(running, width, height, fps, monitor_output, consumer) {
+                if let Err(e) =
+                    run_pipewire_capture(running, width, height, fps, monitor_output, consumer)
+                {
                     log::error!("PipeWire capture error: {:?}", e);
                 }
             })?;
@@ -237,7 +254,10 @@ fn run_pipewire_capture<S: FrameConsumer<Frame = VideoFrame>>(
             fps,
             &mut consumer,
         ) {
-            log::warn!("PipeWire portal stream ended/failed ({}); trying fallback", e);
+            log::warn!(
+                "PipeWire portal stream ended/failed ({}); trying fallback",
+                e
+            );
         } else {
             drop(session._conn);
             return Ok(());
@@ -329,8 +349,7 @@ fn run_pipewire_stream<S: FrameConsumer<Frame = VideoFrame>>(
             if id != pw::spa::param::ParamType::Format.as_raw() {
                 return;
             }
-            let Ok((media_type, media_subtype)) =
-                pw::spa::param::format_utils::parse_format(param)
+            let Ok((media_type, media_subtype)) = pw::spa::param::format_utils::parse_format(param)
             else {
                 return;
             };
@@ -460,10 +479,7 @@ fn run_pipewire_stream<S: FrameConsumer<Frame = VideoFrame>>(
                 denom: 1
             },
             pw::spa::utils::Fraction { num: 0, denom: 1 },
-            pw::spa::utils::Fraction {
-                num: 120,
-                denom: 1
-            }
+            pw::spa::utils::Fraction { num: 120, denom: 1 }
         ),
     );
 
@@ -516,7 +532,9 @@ fn run_pipewire_stream<S: FrameConsumer<Frame = VideoFrame>>(
         }
         mainloop
             .loop_()
-            .iterate(pw::loop_::Timeout::Finite(Duration::from_millis(frame_wait_ms)));
+            .iterate(pw::loop_::Timeout::Finite(Duration::from_millis(
+                frame_wait_ms,
+            )));
 
         let updated = {
             let guard = shared_planes.lock().unwrap();
@@ -586,7 +604,9 @@ fn wait_portal_response(
     Ok(results)
 }
 
-fn start_portal_screencast(running: &AtomicBool) -> Result<PortalScreencastSession, ScreenCaptureError> {
+fn start_portal_screencast(
+    running: &AtomicBool,
+) -> Result<PortalScreencastSession, ScreenCaptureError> {
     let conn = Connection::session()
         .map_err(|e| ScreenCaptureError::PortalError(format!("D-Bus connect failed: {}", e)))?;
 
@@ -603,7 +623,10 @@ fn start_portal_screencast(running: &AtomicBool) -> Result<PortalScreencastSessi
     let mut create_sig = portal_request_signal(&conn, &create_token)?;
 
     let mut create_opts: HashMap<&str, Value> = HashMap::new();
-    create_opts.insert("session_handle_token", Value::from(format!("nayuta_sess_{}", pid)));
+    create_opts.insert(
+        "session_handle_token",
+        Value::from(format!("nayuta_sess_{}", pid)),
+    );
     create_opts.insert("handle_token", Value::from(create_token.as_str()));
 
     let _req_path: OwnedObjectPath = proxy
@@ -613,7 +636,11 @@ fn start_portal_screencast(running: &AtomicBool) -> Result<PortalScreencastSessi
     let create_res = wait_portal_response(&mut create_sig)?;
     let session_handle_str: String = create_res
         .get("session_handle")
-        .and_then(|v| v.downcast_ref::<zbus::zvariant::Str>().ok().map(|s| s.to_string()))
+        .and_then(|v| {
+            v.downcast_ref::<zbus::zvariant::Str>()
+                .ok()
+                .map(|s| s.to_string())
+        })
         .ok_or_else(|| ScreenCaptureError::PortalError("Missing session_handle".into()))?;
     let session_obj = OwnedObjectPath::try_from(session_handle_str)
         .map_err(|e| ScreenCaptureError::PortalError(format!("Invalid session path: {}", e)))?;
@@ -650,9 +677,9 @@ fn start_portal_screencast(running: &AtomicBool) -> Result<PortalScreencastSessi
         .map_err(|e| ScreenCaptureError::PortalError(format!("Portal Start error: {}", e)))?;
     let start_res = wait_portal_response(&mut start_sig)?;
 
-    let streams_val = start_res
-        .get("streams")
-        .ok_or_else(|| ScreenCaptureError::PortalError("Portal Start returned no streams".into()))?;
+    let streams_val = start_res.get("streams").ok_or_else(|| {
+        ScreenCaptureError::PortalError("Portal Start returned no streams".into())
+    })?;
     let streams: Vec<(u32, HashMap<String, OwnedValue>)> = streams_val
         .clone()
         .try_into()
@@ -733,7 +760,9 @@ fn run_fallback_loop<S: FrameConsumer<Frame = VideoFrame>>(
                 }
             } else {
                 if tick == 1 {
-                    log::warn!("grim screen capture not available; using synthetic animated wave fallback");
+                    log::warn!(
+                        "grim screen capture not available; using synthetic animated wave fallback"
+                    );
                 }
                 grim_active = false;
             }

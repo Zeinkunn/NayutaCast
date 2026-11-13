@@ -16,8 +16,8 @@ use wayland_protocols_wlr::screencopy::v1::client::{
     zwlr_screencopy_frame_v1, zwlr_screencopy_manager_v1,
 };
 
-use crate::FrameConsumer;
 use super::pipewire_screen::{PixelOrder, ScreenCaptureError, packed_4byte_to_nv12};
+use crate::FrameConsumer;
 
 struct OutputEntry {
     wl_output: wl_output::WlOutput,
@@ -148,8 +148,7 @@ impl WlrState {
         let Some(spec) = self.select_best_spec() else {
             return;
         };
-        let (width, height, stride, format) =
-            (spec.width, spec.height, spec.stride, spec.format);
+        let (width, height, stride, format) = (spec.width, spec.height, spec.stride, spec.format);
         let Some(shm) = &self.shm else {
             self.phase = FramePhase::Failed;
             return;
@@ -209,7 +208,10 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WlrState {
                     state.manager_version = v;
                     state.manager = Some(
                         registry.bind::<zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1, _, _>(
-                            name, v, qh, (),
+                            name,
+                            v,
+                            qh,
+                            (),
                         ),
                     );
                 }

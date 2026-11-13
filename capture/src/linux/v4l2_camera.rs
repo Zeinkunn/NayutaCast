@@ -143,8 +143,8 @@ impl CaptureHandler for V4L2CameraCapture {
 
                 if name.starts_with("video") {
                     let path = format!("/dev/{}", name);
-                    let display_name = get_device_name(&path)
-                        .unwrap_or_else(|| format!("Camera {}", name));
+                    let display_name =
+                        get_device_name(&path).unwrap_or_else(|| format!("Camera {}", name));
 
                     let idx = sources.len();
                     sources.push(Source {
@@ -201,7 +201,9 @@ impl CaptureHandler for V4L2CameraCapture {
 fn get_device_name(path: &str) -> Option<String> {
     let sysfs_name = path.replace("/dev/", "/sys/class/video4linux/");
     let name_path = format!("{}/name", sysfs_name);
-    fs::read_to_string(&name_path).ok().map(|s| s.trim().to_string())
+    fs::read_to_string(&name_path)
+        .ok()
+        .map(|s| s.trim().to_string())
 }
 
 fn run_v4l2_capture<S: FrameConsumer<Frame = VideoFrame>>(
@@ -229,7 +231,9 @@ fn run_v4l2_capture<S: FrameConsumer<Frame = VideoFrame>>(
     unsafe {
         let mut cap: V4l2Capability = std::mem::zeroed();
         if libc::ioctl(fd, VIDIOC_QUERYCAP, &mut cap) < 0 {
-            return Err(CameraCaptureError::ConfigError("Failed to query V4L2 caps".into()));
+            return Err(CameraCaptureError::ConfigError(
+                "Failed to query V4L2 caps".into(),
+            ));
         }
 
         let mut fmt: V4l2Format = std::mem::zeroed();
@@ -243,7 +247,9 @@ fn run_v4l2_capture<S: FrameConsumer<Frame = VideoFrame>>(
             log::warn!("V4L2: Setting YUYV format failed, trying NV12");
             pix.pixelformat = V4L2_PIX_FMT_NV12;
             if libc::ioctl(fd, VIDIOC_S_FMT, &mut fmt) < 0 {
-                return Err(CameraCaptureError::ConfigError("Failed to set video format".into()));
+                return Err(CameraCaptureError::ConfigError(
+                    "Failed to set video format".into(),
+                ));
             }
         }
 
@@ -257,7 +263,9 @@ fn run_v4l2_capture<S: FrameConsumer<Frame = VideoFrame>>(
         req.memory = V4L2_MEMORY_MMAP;
 
         if libc::ioctl(fd, VIDIOC_REQBUFS, &mut req) < 0 {
-            return Err(CameraCaptureError::ConfigError("Failed to request MMAP buffers".into()));
+            return Err(CameraCaptureError::ConfigError(
+                "Failed to request MMAP buffers".into(),
+            ));
         }
 
         let mut buffers = Vec::new();
@@ -268,7 +276,9 @@ fn run_v4l2_capture<S: FrameConsumer<Frame = VideoFrame>>(
             buf.index = i;
 
             if libc::ioctl(fd, VIDIOC_QUERYBUF, &mut buf) < 0 {
-                return Err(CameraCaptureError::ConfigError("Failed to query buffer".into()));
+                return Err(CameraCaptureError::ConfigError(
+                    "Failed to query buffer".into(),
+                ));
             }
 
             let ptr = libc::mmap(
@@ -287,16 +297,25 @@ fn run_v4l2_capture<S: FrameConsumer<Frame = VideoFrame>>(
             buffers.push((ptr as *mut u8, buf.length as usize));
 
             if libc::ioctl(fd, VIDIOC_QBUF, &mut buf) < 0 {
-                return Err(CameraCaptureError::ConfigError("Initial QBUF failed".into()));
+                return Err(CameraCaptureError::ConfigError(
+                    "Initial QBUF failed".into(),
+                ));
             }
         }
 
         let mut type_ = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         if libc::ioctl(fd, VIDIOC_STREAMON, &mut type_) < 0 {
-            return Err(CameraCaptureError::ConfigError("VIDIOC_STREAMON failed".into()));
+            return Err(CameraCaptureError::ConfigError(
+                "VIDIOC_STREAMON failed".into(),
+            ));
         }
 
-        log::info!("V4L2 stream active: {}x{}, format={:#x}", actual_w, actual_h, actual_fmt);
+        log::info!(
+            "V4L2 stream active: {}x{}, format={:#x}",
+            actual_w,
+            actual_h,
+            actual_fmt
+        );
 
         let y_size = (actual_w * actual_h) as usize;
         let uv_size = (actual_w * (actual_h / 2)) as usize;
@@ -340,7 +359,13 @@ fn run_v4l2_capture<S: FrameConsumer<Frame = VideoFrame>>(
             let data = std::slice::from_raw_parts(ptr, len.min(buf.bytesused as usize));
 
             if actual_fmt == V4L2_PIX_FMT_YUYV {
-                yuyv_to_nv12(data, actual_w as usize, actual_h as usize, &mut y_plane, &mut uv_plane);
+                yuyv_to_nv12(
+                    data,
+                    actual_w as usize,
+                    actual_h as usize,
+                    &mut y_plane,
+                    &mut uv_plane,
+                );
             } else if actual_fmt == V4L2_PIX_FMT_NV12 && data.len() >= y_size + uv_size {
                 y_plane.copy_from_slice(&data[..y_size]);
                 uv_plane.copy_from_slice(&data[y_size..y_size + uv_size]);

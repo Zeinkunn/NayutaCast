@@ -40,8 +40,8 @@ impl RokuSession {
 
         let mut app_id = "2213".to_string(); // Default Roku Media Player
         let xml = apps_resp.body_str();
-        if let Ok(doc) = roxmltree::Document::parse(&xml) {
-            if let Some(node) = doc.descendants().find(|n| {
+        if let Ok(doc) = roxmltree::Document::parse(&xml)
+            && let Some(node) = doc.descendants().find(|n| {
                 n.tag_name().name().eq_ignore_ascii_case("app")
                     && n.text()
                         .map(|t| {
@@ -49,10 +49,10 @@ impl RokuSession {
                             low.contains("media player") || low.contains("playonroku")
                         })
                         .unwrap_or(false)
-            }) && let Some(id) = node.attribute("id")
-            {
-                app_id = id.to_string();
-            }
+            })
+            && let Some(id) = node.attribute("id")
+        {
+            app_id = id.to_string();
         }
 
         let stream_url = format!("http://{}:{}/live.mp4", ctx.lan_ip, ctx.http_port);

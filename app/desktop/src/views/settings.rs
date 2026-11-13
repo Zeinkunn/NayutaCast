@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use egui::{pos2, vec2, Color32, FontId, Rect, Sense, Stroke, Ui};
+use egui::{Color32, FontId, Rect, Sense, Stroke, Ui, pos2, vec2};
 use nayutacast::SourceType;
 
 use crate::config::AppSettings;
@@ -168,10 +168,9 @@ pub fn render_settings(ui: &mut Ui, state: &mut SettingsState) -> SettingsAction
                         if ui
                             .add(egui::TextEdit::singleline(&mut port_str).desired_width(100.0))
                             .changed()
+                            && let Ok(val) = port_str.parse::<u16>()
                         {
-                            if let Ok(val) = port_str.parse::<u16>() {
-                                state.local.port = val;
-                            }
+                            state.local.port = val;
                         }
                     },
                 );
@@ -185,10 +184,9 @@ pub fn render_settings(ui: &mut Ui, state: &mut SettingsState) -> SettingsAction
                         if ui
                             .add(egui::TextEdit::singleline(&mut mtu_str).desired_width(100.0))
                             .changed()
+                            && let Ok(val) = mtu_str.parse::<u32>()
                         {
-                            if let Ok(val) = mtu_str.parse::<u32>() {
-                                state.local.mtu = val;
-                            }
+                            state.local.mtu = val;
                         }
                     },
                 );
@@ -268,20 +266,18 @@ pub fn render_settings(ui: &mut Ui, state: &mut SettingsState) -> SettingsAction
                         if ui
                             .add(egui::TextEdit::singleline(&mut h_str).desired_width(70.0))
                             .changed()
+                            && let Ok(val) = h_str.parse::<u32>()
                         {
-                            if let Ok(val) = h_str.parse::<u32>() {
-                                state.local.resolution_height = val;
-                            }
+                            state.local.resolution_height = val;
                         }
                         ui.label(egui::RichText::new("×").color(TEXT_MUTED));
                         let mut w_str = state.local.resolution_width.to_string();
                         if ui
                             .add(egui::TextEdit::singleline(&mut w_str).desired_width(70.0))
                             .changed()
+                            && let Ok(val) = w_str.parse::<u32>()
                         {
-                            if let Ok(val) = w_str.parse::<u32>() {
-                                state.local.resolution_width = val;
-                            }
+                            state.local.resolution_width = val;
                         }
                     },
                 );
@@ -314,10 +310,9 @@ pub fn render_settings(ui: &mut Ui, state: &mut SettingsState) -> SettingsAction
                         if ui
                             .add(egui::TextEdit::singleline(&mut mbps_str).desired_width(70.0))
                             .changed()
+                            && let Ok(val) = mbps_str.parse::<u32>()
                         {
-                            if let Ok(val) = mbps_str.parse::<u32>() {
-                                state.local.video_bitrate_mbps = val;
-                            }
+                            state.local.video_bitrate_mbps = val;
                         }
                     },
                 );
@@ -455,10 +450,9 @@ pub fn render_settings(ui: &mut Ui, state: &mut SettingsState) -> SettingsAction
                         if ui
                             .add(egui::TextEdit::singleline(&mut kbps_str).desired_width(70.0))
                             .changed()
+                            && let Ok(val) = kbps_str.parse::<u32>()
                         {
-                            if let Ok(val) = kbps_str.parse::<u32>() {
-                                state.local.audio_bitrate_kbps = val;
-                            }
+                            state.local.audio_bitrate_kbps = val;
                         }
                     },
                 );
@@ -485,14 +479,14 @@ pub fn render_settings(ui: &mut Ui, state: &mut SettingsState) -> SettingsAction
                         action.saved = true;
                     }
 
-                    if let Some(t) = state.saved_notice_time {
-                        if t.elapsed().as_secs_f32() < 2.5 {
-                            ui.label(
-                                egui::RichText::new("✓ Pengaturan berhasil disimpan")
-                                    .size(13.0)
-                                    .color(ONLINE_GREEN),
-                            );
-                        }
+                    if let Some(t) = state.saved_notice_time
+                        && t.elapsed().as_secs_f32() < 2.5
+                    {
+                        ui.label(
+                            egui::RichText::new("✓ Pengaturan berhasil disimpan")
+                                .size(13.0)
+                                .color(ONLINE_GREEN),
+                        );
                     }
                 });
 
@@ -528,7 +522,12 @@ where
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
             ui.set_width((ui.available_width() - 250.0).max(160.0));
-            ui.label(egui::RichText::new(label).size(13.5).strong().color(TEXT_MAIN));
+            ui.label(
+                egui::RichText::new(label)
+                    .size(13.5)
+                    .strong()
+                    .color(TEXT_MAIN),
+            );
             ui.label(egui::RichText::new(desc).size(11.5).color(TEXT_MUTED));
         });
 

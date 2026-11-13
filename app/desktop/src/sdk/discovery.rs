@@ -420,14 +420,12 @@ pub fn parse_mdns_response(pkt: &[u8]) -> Vec<ParsedMdnsService> {
                 }
                 txts.insert(rr_name.to_ascii_lowercase(), map);
             }
-            1 => {
+            1 if rdata.len() == 4 => {
                 // A
-                if rdata.len() == 4 {
-                    a_recs.insert(
-                        rr_name.to_ascii_lowercase(),
-                        Ipv4Addr::new(rdata[0], rdata[1], rdata[2], rdata[3]),
-                    );
-                }
+                a_recs.insert(
+                    rr_name.to_ascii_lowercase(),
+                    Ipv4Addr::new(rdata[0], rdata[1], rdata[2], rdata[3]),
+                );
             }
             _ => {}
         }
@@ -529,10 +527,18 @@ fn read_dns_name(pkt: &[u8], start: usize) -> Option<(String, usize)> {
 
 fn build_mdns_ptr_query(service_names: &[&str]) -> Vec<u8> {
     let mut pkt = vec![
-        0x00, 0x00, // ID = 0
-        0x00, 0x00, // Standard Query
-        0x00, service_names.len() as u8, // QDCOUNT
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00,
+        0x00, // ID = 0
+        0x00,
+        0x00, // Standard Query
+        0x00,
+        service_names.len() as u8, // QDCOUNT
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
     ];
     for name in service_names {
         for label in name.trim_end_matches('.').split('.') {
@@ -598,7 +604,8 @@ impl DiscoveryObserver for AppDiscoveryObserver {
         let key = format!("ip:{}", ctx.ip);
         if let Some(dev) = map.get_mut(&key) {
             dev.nayutacast_peer_id = None;
-            dev.protocols.retain(|p| *p != CastProtocol::NayutacastNative);
+            dev.protocols
+                .retain(|p| *p != CastProtocol::NayutacastNative);
             if dev.protocols.is_empty() && !dev.is_custom {
                 map.remove(&key);
             }
@@ -680,7 +687,10 @@ impl DeviceManager {
         match DiscoveryService::new(NAYUTACAST_APP_TOPIC.to_string(), observer).await {
             Ok(svc) => {
                 *self.service.write().await = Some(Arc::new(svc));
-                info!("libp2p DiscoveryService initialized on topic '{}'", NAYUTACAST_APP_TOPIC);
+                info!(
+                    "libp2p DiscoveryService initialized on topic '{}'",
+                    NAYUTACAST_APP_TOPIC
+                );
             }
             Err(e) => warn!("libp2p DiscoveryService unavailable: {}", e),
         }
@@ -701,7 +711,9 @@ impl DeviceManager {
             .ok_or_else(|| anyhow::anyhow!("DiscoveryService is not initialized"))?;
 
         let msg = ServiceMessage {
-            targets: target_peer_id.map(|id| vec![id.to_string()]).unwrap_or_default(),
+            targets: target_peer_id
+                .map(|id| vec![id.to_string()])
+                .unwrap_or_default(),
             name: sender_name.to_string(),
             kind: DeviceType::Linux,
             description,
@@ -829,7 +841,8 @@ impl DeviceManager {
         ifaces: &[LocalInterface],
         is_custom: bool,
     ) -> bool {
-        let Ok(resp) = http_request("GET", location_url, &[], None, Duration::from_millis(1200)).await
+        let Ok(resp) =
+            http_request("GET", location_url, &[], None, Duration::from_millis(1200)).await
         else {
             return false;
         };
@@ -1106,19 +1119,20 @@ impl DeviceManager {
         }
 
         // Unicast SSDP discovery fallback when custom IP is probed or DLNA port is hidden on ephemeral port.
-        if is_custom && av_ctrl.is_none() {
-            if let Some(dlna) = Self::unicast_ssdp_probe(ip).await {
-                if friendly_name.is_none() {
-                    friendly_name = Some(dlna.friendly_name);
-                }
-                manufacturer = manufacturer.or(dlna.manufacturer);
-                model_name = model_name.or(dlna.model_name);
-                av_ctrl = dlna.av_transport_control_url;
-                cm_ctrl = dlna.connection_mgr_control_url;
-                for p in dlna.protocols {
-                    if !protocols.contains(&p) {
-                        protocols.push(p);
-                    }
+        if is_custom
+            && av_ctrl.is_none()
+            && let Some(dlna) = Self::unicast_ssdp_probe(ip).await
+        {
+            if friendly_name.is_none() {
+                friendly_name = Some(dlna.friendly_name);
+            }
+            manufacturer = manufacturer.or(dlna.manufacturer);
+            model_name = model_name.or(dlna.model_name);
+            av_ctrl = dlna.av_transport_control_url;
+            cm_ctrl = dlna.connection_mgr_control_url;
+            for p in dlna.protocols {
+                if !protocols.contains(&p) {
+                    protocols.push(p);
                 }
             }
         }
@@ -1184,15 +1198,20 @@ impl DeviceManager {
     pub async fn unicast_ssdp_probe(ip: IpAddr) -> Option<ParsedUpnpDevice> {
         let sock = UdpSocket::bind("0.0.0.0:0").await.ok()?;
         let req = "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 1\r\nST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n";
-        let _ = sock.send_to(req.as_bytes(), SocketAddr::new(ip, 1900)).await;
+        let _ = sock
+            .send_to(req.as_bytes(), SocketAddr::new(ip, 1900))
+            .await;
         let mut buf = [0u8; 4096];
-        if let Ok(Ok((len, _))) = tokio::time::timeout(Duration::from_millis(800), sock.recv_from(&mut buf)).await {
+        if let Ok(Ok((len, _))) =
+            tokio::time::timeout(Duration::from_millis(800), sock.recv_from(&mut buf)).await
+        {
             let resp = String::from_utf8_lossy(&buf[..len]);
             if let Some(loc) = resp
                 .lines()
                 .find(|l| l.len() > 9 && l[..9].eq_ignore_ascii_case("location:"))
                 .map(|l| l[9..].trim())
-                && let Ok(http_res) = http_request("GET", loc, &[], None, Duration::from_millis(1000)).await
+                && let Ok(http_res) =
+                    http_request("GET", loc, &[], None, Duration::from_millis(1000)).await
                 && let Some(parsed) = parse_upnp_device_xml(loc, &http_res.body_str())
             {
                 return Some(parsed);

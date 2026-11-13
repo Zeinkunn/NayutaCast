@@ -370,6 +370,7 @@ impl Drop for AudioEncoder {
 
 /// Header Packets
 ///
+/// ```text
 ///    An Ogg Opus logical stream contains exactly two mandatory header
 ///    packets: an identification header and a comment header.
 ///
@@ -565,6 +566,7 @@ impl Drop for AudioEncoder {
 ///
 ///        This table defines the mapping from encoded streams to output
 ///        channels.  Its contents are specified in Section 5.1.1.
+/// ```
 #[inline]
 #[rustfmt::skip]
 pub fn create_opus_identification_header(channel: u8, sample_rate: u32) -> [u8; 83] {

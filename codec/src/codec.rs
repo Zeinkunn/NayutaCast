@@ -110,7 +110,10 @@ impl CodecType {
                 avcodec_find_encoder_by_name(PSTR::from(kind.to_string()).as_ptr())
             },
             Self::Decoder(kind) => {
-                if *kind == VideoDecoderType::D3D11 || *kind == VideoDecoderType::VideoToolBox || *kind == VideoDecoderType::Vaapi {
+                if *kind == VideoDecoderType::D3D11
+                    || *kind == VideoDecoderType::VideoToolBox
+                    || *kind == VideoDecoderType::Vaapi
+                {
                     unsafe { avcodec_find_decoder(AVCodecID::AV_CODEC_ID_H264) }
                 } else {
                     unsafe { avcodec_find_decoder_by_name(PSTR::from(kind.to_string()).as_ptr()) }
@@ -252,7 +255,11 @@ pub fn create_video_context(
 
     if kind.is_hardware() {
         let mut hw_device_ctx = std::ptr::null_mut();
-        let candidates = [Some("/dev/dri/renderD128"), Some("/dev/dri/renderD129"), None];
+        let candidates = [
+            Some("/dev/dri/renderD128"),
+            Some("/dev/dri/renderD129"),
+            None,
+        ];
         let mut opened = false;
         for dev in candidates {
             let dev_pstr = dev.map(PSTR::from);

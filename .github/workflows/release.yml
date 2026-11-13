@@ -1,82 +1,247 @@
-name: publish release
+name: Release
+
 on:
-    push:
-        tags:
-            - v*
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag name (optional for dry-run packaging)
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-    build:
-        runs-on: "${{ matrix.os }}"
-        strategy:
-            matrix:
-                os:
-                    - windows-latest
-                    - macos-latest
-        steps:
-            - uses: actions/checkout@v4
-            - uses: actions/cache@v4
-              with:
-                  path: |
-                      ~/.cargo/bin/
-                      ~/.cargo/registry/index/
-                      ~/.cargo/registry/cache/
-                      ~/.cargo/git/db/
-                      node_modules/
-                      target/
-                  key: "${{ matrix.os }}-cargo"
+  build:
+    name: Package (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+          - name: windows-x64
+            os: windows-latest
+          - name: macos-arm64
+            os: macos-latest
 
-            # installation of dependencies
-            - name: Installation of dependencies
-              if: runner.os == 'Macos'
-              run: brew install ffmpeg@7 cmake wget
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-            # use auto build script
-            - name: Build application
-              run: |
-                  npm i yarn -g
-                  yarn
-                  cd app/desktop
-                  yarn build:release
+      - name: Setup system dependencies
+        uses: ./.github/actions/setup-deps
 
-            # compress shared libraries
-            - name: Compress distributions (Windows)
-              if: runner.os == 'Windows'
-              run: Compress-Archive -Path ./target/app -DestinationPath ./nayutacast-windows-x64.zip
+      - name: Setup Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
 
-            - name: Compress distributions (Macos)
-              if: runner.os == 'Macos'
-              run: tar -czvf nayutacast-macos-arm64.tar.gz -C ./target/app .
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: release-${{ matrix.name }}
 
-            # upload to artifact
-            - name: Upload artifact (Windows)
-              if: runner.os == 'Windows'
-              uses: actions/upload-artifact@v4
-              with:
-                  name: nayutacast-windows-x64
-                  path: ./nayutacast-windows-x64.zip
+      - name: Build release binaries
+        run: cargo build --release --locked -p nayutacast-app -p nayutacast-server
 
-            - name: Upload artifact (Macos)
-              if: runner.os == 'Macos'
-              uses: actions/upload-artifact@v4
-              with:
-                  name: nayutacast-macos-arm64
-                  path: ./nayutacast-macos-arm64.tar.gz
+      - name: Package Linux tar.gz and .deb
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          RAW_VER="${GITHUB_REF_NAME#v}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ -n "${{ inputs.tag }}" ]; then
+              RAW_VER="${{ inputs.tag }}"
+              RAW_VER="${RAW_VER#v}"
+            else
+              RAW_VER="0.4.0-ci.${GITHUB_RUN_NUMBER}"
+            fi
+          fi
+          DEB_VER="$(echo "$RAW_VER" | tr -cd '0-9A-Za-z.+~-')"
+          if ! echo "$DEB_VER" | grep -qE '^[0-9]'; then
+            DEB_VER="0.4.0-${DEB_VER:-dev}"
+          fi
+          echo "Packaging Linux release version: ${DEB_VER}"
 
-    deploy:
-        needs: build
-        runs-on: ubuntu-latest
-        steps:
-            - name: Download All Artifacts
-              uses: actions/download-artifact@v4
-              with:
-                  path: artifacts
-            - name: Create release
-              id: create_release
-              uses: softprops/action-gh-release@v1
-              env:
-                  GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-              with:
-                  tag_name: ${{ github.ref_name }}
-                  name: ${{ github.ref_name }}
-                  draft: false
-                  prerelease: false
-                  files: artifacts/**/*
+          mkdir -p release-assets
+
+          # 1. Portable tar.gz archive
+          mkdir -p dist-linux
+          cp target/release/nayutacast-app dist-linux/
+          cp target/release/nayutacast-server dist-linux/
+          cp run_native_app.sh dist-linux/
+          cp logo.png README.md LICENSE dist-linux/
+          chmod +x dist-linux/nayutacast-app dist-linux/nayutacast-server dist-linux/run_native_app.sh
+          tar -czvf release-assets/nayutacast-linux-x64.tar.gz -C dist-linux .
+
+          # 2. Debian/Ubuntu .deb package
+          DEB_ROOT="dist-deb/nayutacast_${DEB_VER}_amd64"
+          mkdir -p \
+            "${DEB_ROOT}/DEBIAN" \
+            "${DEB_ROOT}/usr/bin" \
+            "${DEB_ROOT}/usr/share/applications" \
+            "${DEB_ROOT}/usr/share/icons/hicolor/1024x1024/apps" \
+            "${DEB_ROOT}/usr/share/doc/nayutacast"
+
+          install -m 0755 target/release/nayutacast-app "${DEB_ROOT}/usr/bin/nayutacast-app"
+          install -m 0755 target/release/nayutacast-server "${DEB_ROOT}/usr/bin/nayutacast-server"
+          install -m 0644 app/desktop/assets/icon.png "${DEB_ROOT}/usr/share/icons/hicolor/1024x1024/apps/nayutacast.png"
+          install -m 0644 README.md LICENSE "${DEB_ROOT}/usr/share/doc/nayutacast/"
+
+          INSTALLED_KB="$(du -sk "${DEB_ROOT}/usr" | awk '{print $1}')"
+          export DEB_ROOT DEB_VER INSTALLED_KB
+          python3 - <<'PY'
+          import os
+          import textwrap
+
+          root = os.environ["DEB_ROOT"]
+          ver = os.environ["DEB_VER"]
+          kb = os.environ["INSTALLED_KB"]
+
+          desktop = textwrap.dedent("""\
+              [Desktop Entry]
+              Version=1.0
+              Type=Application
+              Name=NayutaCast
+              Comment=Low-latency cross-platform screen & Smart TV casting application
+              Exec=/usr/bin/nayutacast-app
+              Icon=nayutacast
+              Terminal=false
+              Categories=AudioVideo;Video;Network;Utility;
+              Keywords=screen;cast;mirror;tv;dlna;chromecast;
+              StartupWMClass=NayutaCast
+          """)
+          desktop_path = os.path.join(root, "usr/share/applications/nayutacast.desktop")
+          with open(desktop_path, "w", encoding="utf-8") as f:
+              f.write(desktop)
+          os.chmod(desktop_path, 0o644)
+
+          control = textwrap.dedent(f"""\
+              Package: nayutacast
+              Version: {ver}
+              Section: video
+              Priority: optional
+              Architecture: amd64
+              Installed-Size: {kb}
+              Maintainer: Zeinkunn <elind.zainul@gmail.com>
+              Homepage: https://github.com/Zeinkunn/NayutaCast
+              Depends: libc6, libpipewire-0.3-0 | libpipewire-0.3-0t64, libva2, libx11-6, libxrandr2, libxfixes3, libxdamage1, libv4l-0 | libv4l-0t64, libasound2 | libasound2t64, libssl3 | libssl3t64, libwayland-client0, libxkbcommon0, libgtk-3-0 | libgtk-3-0t64, libgl1, libavcodec60 | libavcodec61 | libavcodec-extra, libavutil58 | libavutil59, libavformat60 | libavformat61, libavdevice60 | libavdevice61, libswscale7 | libswscale8, libswresample4 | libswresample5
+              Description: Native Rust screen & Universal Smart TV casting application
+               NayutaCast mirrors your desktop to Smart TVs and receivers using
+               Google Cast, DLNA/UPnP, AirPlay, Roku ECP, Browser TV (/watch),
+               and native low-latency SRT streaming, with Wayland virtual displays.
+          """)
+          with open(os.path.join(root, "DEBIAN/control"), "w", encoding="utf-8") as f:
+              f.write(control)
+          PY
+
+          dpkg-deb --root-owner-group --build "${DEB_ROOT}" "release-assets/nayutacast_${DEB_VER}_amd64.deb"
+          dpkg-deb --info "release-assets/nayutacast_${DEB_VER}_amd64.deb"
+
+      - name: Package Windows .zip
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist-win, release-assets | Out-Null
+          Copy-Item target/release/nayutacast-app.exe dist-win/
+          Copy-Item target/release/nayutacast-server.exe dist-win/
+          if (Test-Path "$env:FFMPEG_DIR\bin") {
+            Copy-Item "$env:FFMPEG_DIR\bin\*.dll" dist-win/ -ErrorAction SilentlyContinue
+          }
+          Copy-Item logo.png, README.md, LICENSE dist-win/
+          Compress-Archive -Path dist-win\* -DestinationPath release-assets/nayutacast-windows-x64.zip -Force
+
+      - name: Package macOS .app tar.gz
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p release-assets dist-macos
+          APP_DIR="dist-macos/NayutaCast.app"
+          mkdir -p \
+            "${APP_DIR}/Contents/MacOS" \
+            "${APP_DIR}/Contents/Frameworks" \
+            "${APP_DIR}/Contents/Resources"
+
+          # Generate .icns icon from custom app icon
+          ICONSET="${RUNNER_TEMP}/nayutacast.iconset"
+          mkdir -p "${ICONSET}"
+          for sz in 16 32 64 128 256 512; do
+            sips -z "$sz" "$sz" app/desktop/assets/icon.png --out "${ICONSET}/icon_${sz}x${sz}.png" >/dev/null
+          done
+          cp "${ICONSET}/icon_32x32.png" "${ICONSET}/icon_16x16@2x.png"
+          cp "${ICONSET}/icon_64x64.png" "${ICONSET}/icon_32x32@2x.png"
+          cp "${ICONSET}/icon_256x256.png" "${ICONSET}/icon_128x128@2x.png"
+          cp "${ICONSET}/icon_512x512.png" "${ICONSET}/icon_256x256@2x.png"
+          sips -z 1024 1024 app/desktop/assets/icon.png --out "${ICONSET}/icon_512x512@2x.png" >/dev/null
+          iconutil -c icns "${ICONSET}" -o "${APP_DIR}/Contents/Resources/icon.icns"
+
+          cp app/desktop/Info.plist "${APP_DIR}/Contents/Info.plist"
+          cp target/release/nayutacast-app "${APP_DIR}/Contents/MacOS/Nayutacast"
+          cp target/release/nayutacast-server dist-macos/nayutacast-server
+          cp README.md LICENSE dist-macos/
+          chmod +x "${APP_DIR}/Contents/MacOS/Nayutacast" dist-macos/nayutacast-server
+
+          # Bundle ffmpeg@7 dylibs and rewrite rpath cleanly
+          FF_LIB="$(brew --prefix ffmpeg@7)/lib"
+          cp -R "${FF_LIB}"/libav*.dylib "${FF_LIB}"/libsw*.dylib "${APP_DIR}/Contents/Frameworks/" || true
+          install_name_tool -add_rpath "@executable_path/../Frameworks" "${APP_DIR}/Contents/MacOS/Nayutacast" || true
+          for dep in $(otool -L "${APP_DIR}/Contents/MacOS/Nayutacast" | awk '/ffmpeg@7|\/opt\/homebrew\/.*(libav|libsw)/{print $1}'); do
+            base="$(basename "$dep")"
+            if [ -f "${APP_DIR}/Contents/Frameworks/${base}" ]; then
+              install_name_tool -change "$dep" "@rpath/${base}" "${APP_DIR}/Contents/MacOS/Nayutacast" || true
+            fi
+          done
+
+          tar -czvf release-assets/nayutacast-macos-arm64.tar.gz -C dist-macos .
+
+      - name: Upload packaged release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.name }}
+          path: release-assets/*
+          retention-days: 7
+
+  deploy:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
+    steps:
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate SHA256 checksums
+        working-directory: artifacts
+        run: |
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Determine release tag
+        id: rel_tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.rel_tag.outputs.tag }}
+          name: NayutaCast ${{ steps.rel_tag.outputs.tag }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: artifacts/*

@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use capture::DisplayMode;
-use egui::{pos2, vec2, Color32, FontId, Rect, Sense, Stroke, TextureHandle, TextureOptions, Ui};
+use egui::{Color32, FontId, Rect, Sense, Stroke, TextureHandle, TextureOptions, Ui, pos2, vec2};
 
 use crate::sdk::cast::CastingState;
 use crate::sdk::casting::CastingSession;
@@ -149,7 +149,12 @@ pub fn render_casting(
                 24.0 + wave * 12.0,
                 Stroke::new(
                     1.8,
-                    Color32::from_rgba_premultiplied(dot_color.r(), dot_color.g(), dot_color.b(), 120),
+                    Color32::from_rgba_premultiplied(
+                        dot_color.r(),
+                        dot_color.g(),
+                        dot_color.b(),
+                        120,
+                    ),
                 ),
             );
             painter.circle_filled(center, 7.0, dot_color);
@@ -177,7 +182,9 @@ pub fn render_casting(
             CastingState::Connecting { protocol, message } => {
                 format!("{} · {}", protocol, message)
             }
-            CastingState::WaitingForReceiver { protocol, message, .. } => {
+            CastingState::WaitingForReceiver {
+                protocol, message, ..
+            } => {
                 if protocol == "Browser TV" {
                     "Browser TV · Menunggu Smart TV membuka tautan".to_string()
                 } else {
@@ -261,7 +268,11 @@ pub fn render_casting(
                     let box_w = (url_galley.size().x + 92.0).min(available_w - 32.0);
                     ui.allocate_ui(vec2(box_w, 26.0), |ui| {
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(url_label).size(12.5).color(PRIMARY_BLUE));
+                            ui.label(
+                                egui::RichText::new(url_label)
+                                    .size(12.5)
+                                    .color(PRIMARY_BLUE),
+                            );
                             if ui.button("Salin Link").clicked() {
                                 ui.ctx().copy_text(browser_url.clone());
                                 ui_state.copied_at = Some(Instant::now());
@@ -286,7 +297,11 @@ pub fn render_casting(
                         .color(TEXT_MUTED),
                 );
                 ui.add_space(8.0);
-                let retry_box_w = if browser_url.is_empty() { 340.0 } else { 430.0f32.min(available_w - 32.0) };
+                let retry_box_w = if browser_url.is_empty() {
+                    340.0
+                } else {
+                    430.0f32.min(available_w - 32.0)
+                };
                 ui.allocate_ui(vec2(retry_box_w, 32.0), |ui| {
                     ui.horizontal(|ui| {
                         let retry_btn = egui::Button::new(
@@ -333,14 +348,14 @@ pub fn render_casting(
             }
         }
 
-        if let Some(copied) = ui_state.copied_at {
-            if copied.elapsed().as_secs_f32() < 2.0 {
-                ui.label(
-                    egui::RichText::new("✓ Link disalin ke clipboard")
-                        .size(11.5)
-                        .color(ONLINE_GREEN),
-                );
-            }
+        if let Some(copied) = ui_state.copied_at
+            && copied.elapsed().as_secs_f32() < 2.0
+        {
+            ui.label(
+                egui::RichText::new("✓ Link disalin ke clipboard")
+                    .size(11.5)
+                    .color(ONLINE_GREEN),
+            );
         }
 
         ui.add_space(10.0);
@@ -369,7 +384,11 @@ pub fn render_casting(
                     );
 
                     let is_mirror = cur_mode == DisplayMode::Mirror;
-                    painter.rect_filled(if is_mirror { m_rect } else { e_rect }, 8.0, Color32::WHITE);
+                    painter.rect_filled(
+                        if is_mirror { m_rect } else { e_rect },
+                        8.0,
+                        Color32::WHITE,
+                    );
 
                     let mh = ui.rect_contains_pointer(m_rect);
                     let eh = ui.rect_contains_pointer(e_rect);

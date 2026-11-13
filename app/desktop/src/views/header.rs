@@ -1,5 +1,5 @@
-use egui::{pos2, vec2, Color32, Rect, Sense, Stroke, Ui};
 use crate::theme::*;
+use egui::{Color32, Rect, Sense, Stroke, Ui, pos2, vec2};
 
 pub struct HeaderAction {
     pub open_settings: bool,
@@ -8,10 +8,7 @@ pub struct HeaderAction {
     pub maximize: bool,
 }
 
-pub fn render_header(
-    ui: &mut Ui,
-    show_gear: bool,
-) -> HeaderAction {
+pub fn render_header(ui: &mut Ui, show_gear: bool) -> HeaderAction {
     let mut action = HeaderAction {
         open_settings: false,
         close_app: false,
@@ -57,7 +54,11 @@ pub fn render_header(
     let yellow_hovered = ui.rect_contains_pointer(yellow_rect);
     painter.circle_filled(
         yellow_pos,
-        if yellow_hovered { radius * 1.12 } else { radius },
+        if yellow_hovered {
+            radius * 1.12
+        } else {
+            radius
+        },
         TRAFFIC_YELLOW,
     );
     if ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary)) && yellow_hovered {

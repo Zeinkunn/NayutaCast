@@ -1,0 +1,102 @@
+name: Quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: Rustfmt Check (Nightly)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust nightly toolchain with rustfmt
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+
+      - name: Check formatting across workspace
+        run: cargo +nightly fmt --all -- --check
+
+  clippy:
+    name: Clippy Lints
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup system dependencies
+        uses: ./.github/actions/setup-deps
+
+      - name: Setup Rust stable toolchain with clippy
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Clippy error gate (full workspace)
+        run: cargo clippy --workspace --all-targets --locked
+
+      - name: Clippy strict gate (native desktop app)
+        run: cargo clippy -p nayutacast-app --all-targets --no-deps --locked -- -D warnings
+
+  audit:
+    name: Security Advisory Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run RustSec dependency audit
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  scripts-and-yaml:
+    name: Shell & Workflow Syntax Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate shell scripts
+        run: |
+          bash -n run_native_app.sh
+
+      - name: Validate workflow YAML files
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3-yaml
+          python3 - <<'PY'
+          import glob
+          import sys
+          import yaml
+
+          paths = sorted(glob.glob('.github/**/*.yml', recursive=True))
+          if not paths:
+              print("No YAML files found under .github/", file=sys.stderr)
+              sys.exit(1)
+          for p in paths:
+              with open(p, 'r', encoding='utf-8') as f:
+                  yaml.safe_load(f)
+              print(f"Valid YAML: {p}")
+          PY

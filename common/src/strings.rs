@@ -19,6 +19,7 @@ pub mod ffi {
         CString::new(value).unwrap().into_raw()
     }
 
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn from(value: *const c_char) -> Result<String, StringError> {
         if !value.is_null() {
             Ok(unsafe { CStr::from_ptr(value) }
@@ -106,6 +107,7 @@ impl PSTR {
     ///
     /// The behavior of this function is essentially the same as the behavior of
     /// `strcpy` in the C standard library.
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn strcpy(src: &str, dest: *mut c_char) {
         let src = src.as_bytes();
         let len = src.len();

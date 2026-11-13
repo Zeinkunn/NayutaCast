@@ -1,0 +1,49 @@
+name: Rust
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Workspace & Feature Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup system dependencies
+        uses: ./.github/actions/setup-deps
+
+      - name: Setup Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check entire workspace (all targets)
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Check crate feature matrix
+        run: |
+          cargo check -p nayutacast-common --no-default-features --locked
+          cargo check -p nayutacast-common --all-features --locked
+          cargo check -p nayutacast-capture --all-features --locked
+          cargo check -p nayutacast-codec --all-features --locked
+          cargo check -p nayutacast --all-features --locked
+
+      - name: Check native desktop application
+        run: cargo check -p nayutacast-app --locked

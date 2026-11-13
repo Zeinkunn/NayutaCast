@@ -44,7 +44,9 @@ impl TrustAnyCastCert {
     fn new() -> Self {
         let provider = rustls::crypto::ring::default_provider();
         Self {
-            supported: provider.signature_verification_algorithms.supported_schemes(),
+            supported: provider
+                .signature_verification_algorithms
+                .supported_schemes(),
         }
     }
 }
@@ -152,13 +154,12 @@ impl GoogleCastSession {
             message: format!("Membuka koneksi TLS Cast v2 ke {}...", addr),
         };
 
-        let mut root_cfg = ClientConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()?
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(TrustAnyCastCert::new()))
-        .with_no_client_auth();
+        let mut root_cfg =
+            ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()?
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(TrustAnyCastCert::new()))
+                .with_no_client_auth();
         root_cfg.alpn_protocols = Vec::new();
 
         let connector = futures_rustls::TlsConnector::from(Arc::new(root_cfg));
@@ -232,32 +233,31 @@ impl GoogleCastSession {
             if let Some(payload) = msg.payload_utf8
                 && let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload)
                 && val.get("type").and_then(|v| v.as_str()) == Some("RECEIVER_STATUS")
-            {
-                if let Some(apps) = val
+                && let Some(apps) = val
                     .get("status")
                     .and_then(|s| s.get("applications"))
                     .and_then(|a| a.as_array())
-                {
-                    if let Some(app) = apps
-                        .iter()
-                        .find(|a| a.get("appId").and_then(|v| v.as_str()) == Some("CC1AD845"))
-                        .or_else(|| apps.first())
-                    {
-                        transport_id = app
-                            .get("transportId")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
-                        session_id = app
-                            .get("sessionId")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
-                    }
-                }
+                && let Some(app) = apps
+                    .iter()
+                    .find(|a| a.get("appId").and_then(|v| v.as_str()) == Some("CC1AD845"))
+                    .or_else(|| apps.first())
+            {
+                transport_id = app
+                    .get("transportId")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                session_id = app
+                    .get("sessionId")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
             }
         }
 
         let transport_id = transport_id.ok_or_else(|| {
-            anyhow::anyhow!("Google Cast device {} did not launch media receiver", ctx.device.name)
+            anyhow::anyhow!(
+                "Google Cast device {} did not launch media receiver",
+                ctx.device.name
+            )
         })?;
         let session_id = session_id.unwrap_or_default();
 
@@ -323,7 +323,8 @@ impl GoogleCastSession {
                 }
                 let remain = load_deadline.saturating_duration_since(tokio::time::Instant::now());
                 let poll_slice = remain.min(Duration::from_millis(250));
-                if let Ok(Ok(msg)) = tokio::time::timeout(poll_slice, read_cast_msg(&mut tls)).await {
+                if let Ok(Ok(msg)) = tokio::time::timeout(poll_slice, read_cast_msg(&mut tls)).await
+                {
                     if msg.namespace == "urn:x-cast:com.google.cast.tp.heartbeat" {
                         let _ = write_cast_msg(
                             &mut tls,
@@ -438,7 +439,10 @@ impl GoogleCastSession {
                 "sender-0",
                 &tid_bg,
                 "urn:x-cast:com.google.cast.media",
-                format!(r#"{{"type":"STOP","requestId":999,"sessionId":"{}"}}"#, sid_bg),
+                format!(
+                    r#"{{"type":"STOP","requestId":999,"sessionId":"{}"}}"#,
+                    sid_bg
+                ),
             )
             .await;
             let _ = write_cast_msg(
@@ -446,7 +450,10 @@ impl GoogleCastSession {
                 "sender-0",
                 "receiver-0",
                 "urn:x-cast:com.google.cast.receiver",
-                format!(r#"{{"type":"STOP","requestId":1000,"sessionId":"{}"}}"#, sid_bg),
+                format!(
+                    r#"{{"type":"STOP","requestId":1000,"sessionId":"{}"}}"#,
+                    sid_bg
+                ),
             )
             .await;
             let _ = (dev_name, browser_url);
@@ -465,13 +472,12 @@ impl GoogleCastSession {
     pub async fn stop(&mut self) {
         self.stopped.store(true, Ordering::SeqCst);
         self.stop_notify.notify_waiters();
-        if let Some(mut t) = self.task.take() {
-            if tokio::time::timeout(Duration::from_millis(600), &mut t)
+        if let Some(mut t) = self.task.take()
+            && tokio::time::timeout(Duration::from_millis(600), &mut t)
                 .await
                 .is_err()
-            {
-                t.abort();
-            }
+        {
+            t.abort();
         }
         let _ = (&self.tls_target, &self.session_id, &self.transport_id);
     }
@@ -494,8 +500,14 @@ mod tests {
         };
         let encoded = msg.encode_to_vec();
         // Required tag 1 = 0 must appear as [0x08, 0x00]; required tag 5 = 0 must appear as [0x28, 0x00].
-        assert!(encoded.windows(2).any(|w| w == [0x08, 0x00]), "missing protocol_version tag 1");
-        assert!(encoded.windows(2).any(|w| w == [0x28, 0x00]), "missing payload_type tag 5");
+        assert!(
+            encoded.windows(2).any(|w| w == [0x08, 0x00]),
+            "missing protocol_version tag 1"
+        );
+        assert!(
+            encoded.windows(2).any(|w| w == [0x28, 0x00]),
+            "missing payload_type tag 5"
+        );
 
         let decoded = CastMessage::decode(&encoded[..]).expect("decode CastMessage");
         assert_eq!(decoded, msg);

@@ -53,7 +53,9 @@ impl StreamHub {
             mpegts_gop_prefix: RwLock::new(Vec::new()),
             fmp4_init: RwLock::new(Vec::new()),
             fmp4_latest_frag: RwLock::new(None),
-            hls_playlist: RwLock::new("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n".to_string()),
+            hls_playlist: RwLock::new(
+                "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n".to_string(),
+            ),
             hls_segments: RwLock::new(HashMap::new()),
             hls_order: RwLock::new(VecDeque::new()),
             ts_tx,
@@ -98,9 +100,7 @@ impl StreamHub {
         for line in playlist.lines() {
             if line.starts_with("seg_") && line.ends_with(".ts") {
                 let already = self.hls_segments.read().await.contains_key(line);
-                if !already
-                    && let Some(bytes) = muxer.hls_segment(line)
-                {
+                if !already && let Some(bytes) = muxer.hls_segment(line) {
                     self.hls_segments
                         .write()
                         .await
@@ -119,7 +119,12 @@ impl StreamHub {
 
     /// Directly seeds test/synthetic media bytes (used by unit/integration tests).
     #[allow(dead_code)]
-    pub async fn publish_raw_test_stream(&self, ts_data: Vec<u8>, mp4_init: Vec<u8>, mp4_frag: Vec<u8>) {
+    pub async fn publish_raw_test_stream(
+        &self,
+        ts_data: Vec<u8>,
+        mp4_init: Vec<u8>,
+        mp4_frag: Vec<u8>,
+    ) {
         *self.mpegts_gop_prefix.write().await = ts_data.clone();
         *self.fmp4_init.write().await = mp4_init;
         *self.fmp4_latest_frag.write().await = Some(mp4_frag.clone());
@@ -199,7 +204,8 @@ async fn handle_client(stream: TcpStream, hub: Arc<StreamHub>) -> anyhow::Result
     let mut reader = BufReader::new(read_half);
 
     let mut request_line = String::new();
-    let n = tokio::time::timeout(Duration::from_secs(3), reader.read_line(&mut request_line)).await??;
+    let n =
+        tokio::time::timeout(Duration::from_secs(3), reader.read_line(&mut request_line)).await??;
     if n == 0 {
         return Ok(());
     }
@@ -207,7 +213,8 @@ async fn handle_client(stream: TcpStream, hub: Arc<StreamHub>) -> anyhow::Result
     // Drain remaining request headers until blank line.
     loop {
         let mut line = String::new();
-        let len = tokio::time::timeout(Duration::from_secs(2), reader.read_line(&mut line)).await??;
+        let len =
+            tokio::time::timeout(Duration::from_secs(2), reader.read_line(&mut line)).await??;
         if len == 0 || line == "\r\n" || line == "\n" {
             break;
         }
@@ -263,7 +270,9 @@ async fn handle_client(stream: TcpStream, hub: Arc<StreamHub>) -> anyhow::Result
 
             // Wait briefly for initial keyframe GOP prefix if stream just started.
             for _ in 0..25 {
-                if !hub.mpegts_gop_prefix.read().await.is_empty() || hub.stopped.load(Ordering::SeqCst) {
+                if !hub.mpegts_gop_prefix.read().await.is_empty()
+                    || hub.stopped.load(Ordering::SeqCst)
+                {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(80)).await;
@@ -272,7 +281,8 @@ async fn handle_client(stream: TcpStream, hub: Arc<StreamHub>) -> anyhow::Result
             let prefix = hub.mpegts_gop_prefix.read().await.clone();
             if !prefix.is_empty() {
                 write_half.write_all(&prefix).await?;
-                hub.bytes_served.fetch_add(prefix.len() as u64, Ordering::Relaxed);
+                hub.bytes_served
+                    .fetch_add(prefix.len() as u64, Ordering::Relaxed);
             }
 
             while !hub.stopped.load(Ordering::SeqCst) {
@@ -281,7 +291,8 @@ async fn handle_client(stream: TcpStream, hub: Arc<StreamHub>) -> anyhow::Result
                         if write_half.write_all(&chunk).await.is_err() {
                             break;
                         }
-                        hub.bytes_served.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+                        hub.bytes_served
+                            .fetch_add(chunk.len() as u64, Ordering::Relaxed);
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => break,
@@ -314,11 +325,13 @@ async fn handle_client(stream: TcpStream, hub: Arc<StreamHub>) -> anyhow::Result
             let init = hub.fmp4_init.read().await.clone();
             if !init.is_empty() {
                 write_half.write_all(&init).await?;
-                hub.bytes_served.fetch_add(init.len() as u64, Ordering::Relaxed);
+                hub.bytes_served
+                    .fetch_add(init.len() as u64, Ordering::Relaxed);
             }
             if let Some(frag) = hub.fmp4_latest_frag.read().await.clone() {
                 write_half.write_all(&frag).await?;
-                hub.bytes_served.fetch_add(frag.len() as u64, Ordering::Relaxed);
+                hub.bytes_served
+                    .fetch_add(frag.len() as u64, Ordering::Relaxed);
             }
 
             while !hub.stopped.load(Ordering::SeqCst) {
@@ -327,7 +340,8 @@ async fn handle_client(stream: TcpStream, hub: Arc<StreamHub>) -> anyhow::Result
                         if write_half.write_all(&frag).await.is_err() {
                             break;
                         }
-                        hub.bytes_served.fetch_add(frag.len() as u64, Ordering::Relaxed);
+                        hub.bytes_served
+                            .fetch_add(frag.len() as u64, Ordering::Relaxed);
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => break,
@@ -355,7 +369,8 @@ async fn handle_client(stream: TcpStream, hub: Arc<StreamHub>) -> anyhow::Result
             write_half.write_all(hdr.as_bytes()).await?;
             if !is_head {
                 write_half.write_all(body.as_bytes()).await?;
-                hub.bytes_served.fetch_add(body.len() as u64, Ordering::Relaxed);
+                hub.bytes_served
+                    .fetch_add(body.len() as u64, Ordering::Relaxed);
             }
         }
         p if p.starts_with("/seg_") && p.ends_with(".ts") => {
@@ -374,11 +389,14 @@ async fn handle_client(stream: TcpStream, hub: Arc<StreamHub>) -> anyhow::Result
                 write_half.write_all(hdr.as_bytes()).await?;
                 if !is_head {
                     write_half.write_all(&data).await?;
-                    hub.bytes_served.fetch_add(data.len() as u64, Ordering::Relaxed);
+                    hub.bytes_served
+                        .fetch_add(data.len() as u64, Ordering::Relaxed);
                 }
             } else {
                 write_half
-                    .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .write_all(
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
                     .await?;
             }
         }
@@ -399,7 +417,9 @@ async fn handle_client(stream: TcpStream, hub: Arc<StreamHub>) -> anyhow::Result
         }
         _ => {
             write_half
-                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
                 .await?;
         }
     }

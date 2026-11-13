@@ -375,39 +375,37 @@ impl<'a> VideoRender<'a> {
                 self.0.submit(texture)?;
             }
             #[cfg(target_os = "macos")]
-            VideoSubFormat::CvPixelBufferRef => {
-                match frame.format {
-                    VideoFormat::BGRA => {
-                        self.0.submit(Texture::Bgra(Texture2DResource::Texture(
-                            Texture2DRaw::CVPixelBufferRef(frame.data[0] as CVPixelBufferRef),
-                        )))?;
-                    }
-                    VideoFormat::RGBA => {
-                        self.0.submit(Texture::Rgba(Texture2DResource::Texture(
-                            Texture2DRaw::CVPixelBufferRef(frame.data[0] as CVPixelBufferRef),
-                        )))?;
-                    }
-                    _ => {
-                        let pixel_buffer = PixelMomeryBuffer::from((
-                            frame.data[0] as CVPixelBufferRef,
-                            frame.format,
-                            Size {
-                                width: frame.width,
-                                height: frame.height,
-                            },
-                        ));
+            VideoSubFormat::CvPixelBufferRef => match frame.format {
+                VideoFormat::BGRA => {
+                    self.0.submit(Texture::Bgra(Texture2DResource::Texture(
+                        Texture2DRaw::CVPixelBufferRef(frame.data[0] as CVPixelBufferRef),
+                    )))?;
+                }
+                VideoFormat::RGBA => {
+                    self.0.submit(Texture::Rgba(Texture2DResource::Texture(
+                        Texture2DRaw::CVPixelBufferRef(frame.data[0] as CVPixelBufferRef),
+                    )))?;
+                }
+                _ => {
+                    let pixel_buffer = PixelMomeryBuffer::from((
+                        frame.data[0] as CVPixelBufferRef,
+                        frame.format,
+                        Size {
+                            width: frame.width,
+                            height: frame.height,
+                        },
+                    ));
 
-                        let buffer = Texture2DBuffer {
-                            buffers: &pixel_buffer.data,
-                            linesize: &frame.linesize,
-                        };
+                    let buffer = Texture2DBuffer {
+                        buffers: &pixel_buffer.data,
+                        linesize: &frame.linesize,
+                    };
 
-                        self.0.submit(match frame.format {
-                            VideoFormat::NV12 => Texture::Nv12(Texture2DResource::Buffer(buffer)),
-                            VideoFormat::I420 => Texture::I420(buffer),
-                            _ => unreachable!(),
-                        })?;
-                    }
+                    self.0.submit(match frame.format {
+                        VideoFormat::NV12 => Texture::Nv12(Texture2DResource::Buffer(buffer)),
+                        VideoFormat::I420 => Texture::I420(buffer),
+                        _ => unreachable!(),
+                    })?;
                 }
             },
             VideoSubFormat::SW => {

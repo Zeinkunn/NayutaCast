@@ -46,10 +46,29 @@ impl LocalInterface {
 pub fn classify_interface_kind(name: &str) -> Option<NetworkKind> {
     let lower = name.to_ascii_lowercase();
     let ignored_prefixes = [
-        "lo", "docker", "br-", "veth", "virbr", "tun", "tap", "wg", "tailscale", "zt", "vmnet",
-        "vboxnet", "podman", "cni", "flannel", "cali", "dummy", "ifb",
+        "lo",
+        "docker",
+        "br-",
+        "veth",
+        "virbr",
+        "tun",
+        "tap",
+        "wg",
+        "tailscale",
+        "zt",
+        "vmnet",
+        "vboxnet",
+        "podman",
+        "cni",
+        "flannel",
+        "cali",
+        "dummy",
+        "ifb",
     ];
-    if ignored_prefixes.iter().any(|p| lower == *p || lower.starts_with(p)) {
+    if ignored_prefixes
+        .iter()
+        .any(|p| lower == *p || lower.starts_with(p))
+    {
         return None;
     }
 
@@ -125,10 +144,10 @@ pub fn resolve_lan_ip_for_target(target_ip: Option<IpAddr>) -> Option<Ipv4Addr> 
 /// Infers whether a peer IP address is reachable over local `Wifi` or `Lan` interface.
 pub fn infer_network_kind_for_ip(ip: IpAddr, ifaces: &[LocalInterface]) -> NetworkKind {
     if let IpAddr::V4(target_v4) = ip {
-        if let Some(local_ip) = resolve_lan_ip_for_target(Some(ip)) {
-            if let Some(found) = ifaces.iter().find(|i| i.ip == local_ip) {
-                return found.kind;
-            }
+        if let Some(local_ip) = resolve_lan_ip_for_target(Some(ip))
+            && let Some(found) = ifaces.iter().find(|i| i.ip == local_ip)
+        {
+            return found.kind;
         }
         if let Some(found) = ifaces.iter().find(|i| i.same_subnet(target_v4)) {
             return found.kind;

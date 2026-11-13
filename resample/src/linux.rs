@@ -1,5 +1,5 @@
 //! Linux audio resampling using native libraries
-//! 
+//!
 //! This module provides audio resampling functionality for Linux without FFmpeg dependency.
 //! It can use either:
 //! - libsamplerate (high quality, CPU-based)
@@ -58,7 +58,7 @@ pub trait SampleFromF32: Copy + Default + Send + 'static {
 }
 
 /// Audio resampler using linear interpolation (simple, no external dependencies)
-/// 
+///
 /// This is a basic implementation for Linux. For better quality, consider using
 /// libsamplerate or speexdsp bindings.
 pub struct AudioResampler<I, O> {
@@ -80,38 +80,41 @@ where
         let (tx, rx) = channel::<Vec<I>>();
 
         let status = Arc::new(AtomicBool::new(true));
-        
+
         let status_ = status.clone();
         let ratio = output.sample_rate as f64 / input.sample_rate as f64;
         let output_channels = output.channels as usize;
-        
+
         thread::spawn(move || {
             while let Ok(buffer) = rx.recv() {
                 let input_frames = buffer.len() / input.channels as usize;
                 let output_frames = (input_frames as f64 * ratio) as usize;
                 let mut output: Vec<O> = vec![O::default(); output_frames * output_channels];
-                
+
                 // Simple linear interpolation resampling
                 for ch in 0..output_channels {
                     let ch_input = input.channels as usize;
-                    
+
                     for i in 0..output_frames {
                         let src_pos = i as f64 / ratio;
                         let src_idx = src_pos as usize;
                         let frac = src_pos - src_idx as f64;
-                        
+
                         if src_idx + 1 < input_frames {
-                            let sample1: f64 = buffer[src_idx * ch_input + ch.min(ch_input - 1)].to_f64();
-                            let sample2: f64 = buffer[(src_idx + 1) * ch_input + ch.min(ch_input - 1)].to_f64();
+                            let sample1: f64 =
+                                buffer[src_idx * ch_input + ch.min(ch_input - 1)].to_f64();
+                            let sample2: f64 =
+                                buffer[(src_idx + 1) * ch_input + ch.min(ch_input - 1)].to_f64();
                             let interpolated = sample1 * (1.0 - frac) + sample2 * frac;
                             output[i * output_channels + ch] = O::from_f32(interpolated as f32);
                         } else if src_idx < input_frames {
-                            let sample: f64 = buffer[src_idx * ch_input + ch.min(ch_input - 1)].to_f64();
+                            let sample: f64 =
+                                buffer[src_idx * ch_input + ch.min(ch_input - 1)].to_f64();
                             output[i * output_channels + ch] = O::from_f32(sample as f32);
                         }
                     }
                 }
-                
+
                 if !sink.output(&output, output_frames as u32) {
                     break;
                 }

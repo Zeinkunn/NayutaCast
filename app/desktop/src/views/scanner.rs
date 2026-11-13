@@ -2,7 +2,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use capture::DisplayMode;
-use egui::{pos2, vec2, Color32, FontId, Rect, Sense, Stroke, Ui};
+use egui::{Color32, FontId, Rect, Sense, Stroke, Ui, pos2, vec2};
 
 use crate::sdk::discovery::{CastProtocol, DeviceInfo, DeviceKind, DeviceManager};
 use crate::theme::*;
@@ -111,7 +111,11 @@ fn draw_segmented_actions(
         egui::Align2::CENTER_CENTER,
         "Pindai Ulang",
         FontId::proportional(13.0),
-        if rescan_hovered { PRIMARY_BLUE } else { TEXT_MAIN },
+        if rescan_hovered {
+            PRIMARY_BLUE
+        } else {
+            TEXT_MAIN
+        },
     );
 
     if add_ip_hovered {
@@ -126,7 +130,11 @@ fn draw_segmented_actions(
         egui::Align2::CENTER_CENTER,
         "Tambahkan IP",
         FontId::proportional(13.0),
-        if add_ip_hovered { PRIMARY_BLUE } else { TEXT_MAIN },
+        if add_ip_hovered {
+            PRIMARY_BLUE
+        } else {
+            TEXT_MAIN
+        },
     );
 }
 
@@ -139,10 +147,8 @@ fn draw_display_mode_toggle(ui: &mut Ui, mode: &mut DisplayMode, col_width: f32)
     painter.rect_filled(rect, 9.0, Color32::from_rgb(238, 241, 246));
 
     let half_w = pill_w / 2.0;
-    let mirror_rect = Rect::from_min_size(
-        rect.min + vec2(2.0, 2.0),
-        vec2(half_w - 3.0, pill_h - 4.0),
-    );
+    let mirror_rect =
+        Rect::from_min_size(rect.min + vec2(2.0, 2.0), vec2(half_w - 3.0, pill_h - 4.0));
     let extend_rect = Rect::from_min_size(
         rect.min + vec2(half_w + 1.0, 2.0),
         vec2(half_w - 3.0, pill_h - 4.0),
@@ -248,7 +254,11 @@ pub fn render_scanner(
         );
 
         let wifi_active = state.active_tab == DeviceKind::Wifi;
-        painter.rect_filled(if wifi_active { wifi_rect } else { lan_rect }, 8.0, Color32::WHITE);
+        painter.rect_filled(
+            if wifi_active { wifi_rect } else { lan_rect },
+            8.0,
+            Color32::WHITE,
+        );
 
         if ui.rect_contains_pointer(wifi_rect) {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -285,7 +295,10 @@ pub fn render_scanner(
         // 3. Device List
         let devices = state.cached_devices.clone();
 
-        if !devices.iter().any(|d| d.ip.to_string() == state.selected_ip) {
+        if !devices
+            .iter()
+            .any(|d| d.ip.to_string() == state.selected_ip)
+        {
             if let Some(first) = devices.first() {
                 state.selected_ip = first.ip.to_string();
             } else {
@@ -324,26 +337,30 @@ pub fn render_scanner(
                 egui::StrokeKind::Inside,
             );
             painter.line_segment(
-                [pos2(center.x - 4.5, center.y + 10.0), pos2(center.x + 4.5, center.y + 10.0)],
+                [
+                    pos2(center.x - 4.5, center.y + 10.0),
+                    pos2(center.x + 4.5, center.y + 10.0),
+                ],
                 Stroke::new(1.8, PRIMARY_BLUE),
             );
 
-            let (status_title, status_desc) = if state.active_tab == DeviceKind::Lan && !state.cached_lan_up {
-                (
-                    "Tidak ada antarmuka LAN (Ethernet) aktif",
-                    "Hubungkan kabel LAN atau beralih ke tab Wi-Fi untuk memindai Smart TV.",
-                )
-            } else if state.cached_scanning {
-                (
-                    "Memindai Smart TV di jaringan...",
-                    "Mencari Google Cast, DLNA/UPnP, AirPlay, Roku & NayutaCast receiver...",
-                )
-            } else {
-                (
-                    "Belum ada TV atau receiver terdeteksi",
-                    "Pastikan TV dan laptop terhubung ke jaringan Wi-Fi / LAN yang sama.",
-                )
-            };
+            let (status_title, status_desc) =
+                if state.active_tab == DeviceKind::Lan && !state.cached_lan_up {
+                    (
+                        "Tidak ada antarmuka LAN (Ethernet) aktif",
+                        "Hubungkan kabel LAN atau beralih ke tab Wi-Fi untuk memindai Smart TV.",
+                    )
+                } else if state.cached_scanning {
+                    (
+                        "Memindai Smart TV di jaringan...",
+                        "Mencari Google Cast, DLNA/UPnP, AirPlay, Roku & NayutaCast receiver...",
+                    )
+                } else {
+                    (
+                        "Belum ada TV atau receiver terdeteksi",
+                        "Pastikan TV dan laptop terhubung ke jaringan Wi-Fi / LAN yang sama.",
+                    )
+                };
 
             painter.text(
                 pos2(center.x, radar_rect.min.y + 125.0),
@@ -382,7 +399,11 @@ pub fn render_scanner(
                         }
 
                         let painter = ui.painter_at(card_rect);
-                        let bg_color = if is_selected { PRIMARY_BLUE_LIGHT } else { CARD_BG };
+                        let bg_color = if is_selected {
+                            PRIMARY_BLUE_LIGHT
+                        } else {
+                            CARD_BG
+                        };
                         let stroke = if is_selected {
                             card_selected_stroke()
                         } else {
@@ -391,7 +412,11 @@ pub fn render_scanner(
                         painter.rect(card_rect, 14.0, bg_color, stroke, egui::StrokeKind::Inside);
 
                         let icon_center = pos2(card_rect.min.x + 30.0, card_rect.center().y);
-                        let icon_color = if is_selected { PRIMARY_BLUE } else { TEXT_MUTED };
+                        let icon_color = if is_selected {
+                            PRIMARY_BLUE
+                        } else {
+                            TEXT_MUTED
+                        };
                         let tv_screen = Rect::from_center_size(icon_center, vec2(18.0, 13.0));
                         painter.rect_stroke(
                             tv_screen,
@@ -443,11 +468,17 @@ pub fn render_scanner(
                             let check_x = card_rect.max.x - 22.0;
                             let check_y = card_rect.center().y;
                             painter.line_segment(
-                                [pos2(check_x - 7.0, check_y), pos2(check_x - 2.0, check_y + 4.5)],
+                                [
+                                    pos2(check_x - 7.0, check_y),
+                                    pos2(check_x - 2.0, check_y + 4.5),
+                                ],
                                 Stroke::new(2.2, PRIMARY_BLUE),
                             );
                             painter.line_segment(
-                                [pos2(check_x - 2.0, check_y + 4.5), pos2(check_x + 6.0, check_y - 5.0)],
+                                [
+                                    pos2(check_x - 2.0, check_y + 4.5),
+                                    pos2(check_x + 6.0, check_y - 5.0),
+                                ],
                                 Stroke::new(2.2, PRIMARY_BLUE),
                             );
                         }
@@ -496,14 +527,13 @@ pub fn render_scanner(
                 Color32::WHITE,
             );
 
-            if btn_resp.clicked() {
-                if let Some(dev) = devices
+            if btn_resp.clicked()
+                && let Some(dev) = devices
                     .iter()
                     .find(|d| d.ip.to_string() == state.selected_ip)
                     .cloned()
-                {
-                    action.start_casting = Some(dev);
-                }
+            {
+                action.start_casting = Some(dev);
             }
         }
     });
@@ -517,7 +547,11 @@ pub fn render_scanner(
             .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
             .show(ui.ctx(), |ui| {
                 ui.add_space(6.0);
-                ui.label(egui::RichText::new("Alamat IP Target TV:").size(13.0).color(TEXT_MAIN));
+                ui.label(
+                    egui::RichText::new("Alamat IP Target TV:")
+                        .size(13.0)
+                        .color(TEXT_MAIN),
+                );
                 ui.add_space(4.0);
                 ui.add(
                     egui::TextEdit::singleline(&mut state.manual_ip)
@@ -574,7 +608,9 @@ pub fn render_scanner(
                     }
                     ui.add_space(8.0);
                     let add_btn = egui::Button::new(
-                        egui::RichText::new("Pindai & Pilih").strong().color(Color32::WHITE),
+                        egui::RichText::new("Pindai & Pilih")
+                            .strong()
+                            .color(Color32::WHITE),
                     )
                     .fill(PRIMARY_BLUE);
                     if ui.add(add_btn).clicked() {

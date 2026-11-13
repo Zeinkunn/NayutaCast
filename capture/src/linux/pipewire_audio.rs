@@ -253,9 +253,10 @@ impl PipeWireAudioCapture {
                     move |data: &[f32], _| {
                         if running.load(Ordering::SeqCst) {
                             i16_buf.clear();
-                            i16_buf.extend(data.iter().map(|&s| {
-                                (s * 32767.0).clamp(-32768.0, 32767.0) as i16
-                            }));
+                            i16_buf.extend(
+                                data.iter()
+                                    .map(|&s| (s * 32767.0).clamp(-32768.0, 32767.0) as i16),
+                            );
                             let _ = resampler.resample(&i16_buf);
                         }
                     },
@@ -273,7 +274,10 @@ impl PipeWireAudioCapture {
         stream.play()?;
         *self.stream.lock() = Some(stream);
 
-        log::info!("Linux CPAL audio capture started: {} Hz stereo", target_rate);
+        log::info!(
+            "Linux CPAL audio capture started: {} Hz stereo",
+            target_rate
+        );
         Ok(())
     }
 }

@@ -74,7 +74,9 @@ async fn probe_dlna_control_urls(ip: IpAddr) -> Option<(String, Option<String>)>
         return Some((av, parsed.connection_mgr_control_url));
     }
 
-    let candidate_ports = [9197u16, 1990, 1443, 7676, 38400, 49152, 49153, 49154, 49155, 8008];
+    let candidate_ports = [
+        9197u16, 1990, 1443, 7676, 38400, 49152, 49153, 49154, 49155, 8008,
+    ];
     let candidate_paths = [
         "/dmr.xml",
         "/description.xml",
@@ -125,7 +127,10 @@ impl DlnaSession {
         }
 
         let control_url = av_ctrl.ok_or_else(|| {
-            anyhow::anyhow!("Perangkat {} tidak memiliki endpoint UPnP AVTransport:1", ctx.device.ip)
+            anyhow::anyhow!(
+                "Perangkat {} tidak memiliki endpoint UPnP AVTransport:1",
+                ctx.device.ip
+            )
         })?;
 
         *ctx.state.write().await = CastingState::Connecting {
@@ -135,17 +140,16 @@ impl DlnaSession {
 
         // Query GetProtocolInfo when available to prioritize supported MIME profiles.
         let mut sink_info = String::new();
-        if let Some(cm) = cm_ctrl {
-            if let Ok(res) = send_soap_action(
+        if let Some(cm) = cm_ctrl
+            && let Ok(res) = send_soap_action(
                 &cm,
                 "urn:schemas-upnp-org:service:ConnectionManager:1",
                 "GetProtocolInfo",
                 "",
             )
             .await
-            {
-                sink_info = res.to_ascii_lowercase();
-            }
+        {
+            sink_info = res.to_ascii_lowercase();
         }
 
         let _ = send_soap_action(
@@ -174,7 +178,10 @@ impl DlnaSession {
             ),
         ];
 
-        if !sink_info.is_empty() && !sink_info.contains("video/mp2t") && sink_info.contains("video/mp4") {
+        if !sink_info.is_empty()
+            && !sink_info.contains("video/mp2t")
+            && sink_info.contains("video/mp4")
+        {
             profiles.rotate_left(2);
         }
 
@@ -247,11 +254,11 @@ impl DlnaSession {
                 "<InstanceID>0</InstanceID>",
             )
             .await
+                && info_xml.contains("PLAYING")
+                && ctx.hub.bytes_served() > 0
             {
-                if info_xml.contains("PLAYING") && ctx.hub.bytes_served() > 0 {
-                    verified = true;
-                    break;
-                }
+                verified = true;
+                break;
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
@@ -299,10 +306,10 @@ impl DlnaSession {
                     "<InstanceID>0</InstanceID>",
                 )
                 .await
+                    && info.contains("STOPPED")
+                    && clients == 0
                 {
-                    if info.contains("STOPPED") && clients == 0 {
-                        break;
-                    }
+                    break;
                 }
                 let mut st = state_bg.write().await;
                 if let CastingState::Connected {

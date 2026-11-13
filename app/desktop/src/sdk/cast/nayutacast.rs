@@ -53,6 +53,7 @@ pub struct NayutacastCastSession {
 }
 
 impl NayutacastCastSession {
+    #[allow(clippy::too_many_arguments)]
     pub async fn connect(
         handle: SrtSenderHandle,
         lan_ip: Ipv4Addr,
@@ -93,7 +94,10 @@ impl NayutacastCastSession {
 
         *state.write().await = CastingState::WaitingForReceiver {
             protocol: "NayutaCast Native (SRT)".to_string(),
-            message: format!("Menunggu aplikasi receiver {} tersambung ke SRT...", device.name),
+            message: format!(
+                "Menunggu aplikasi receiver {} tersambung ke SRT...",
+                device.name
+            ),
             browser_url: browser_url.clone(),
         };
 

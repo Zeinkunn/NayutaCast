@@ -64,10 +64,7 @@ pub fn find_new_headless_monitor(
 ) -> Option<String> {
     after
         .iter()
-        .find(|m| {
-            m.name.starts_with("HEADLESS-")
-                && !before.iter().any(|b| b.name == m.name)
-        })
+        .find(|m| m.name.starts_with("HEADLESS-") && !before.iter().any(|b| b.name == m.name))
         .map(|m| m.name.clone())
 }
 
@@ -143,7 +140,10 @@ impl VirtualDisplayGuard {
         if let Ok(stale) = std::fs::read_to_string(&path) {
             let trimmed = stale.trim();
             if trimmed.starts_with("HEADLESS-") {
-                log::info!("Removing stale virtual display from previous crash: {}", trimmed);
+                log::info!(
+                    "Removing stale virtual display from previous crash: {}",
+                    trimmed
+                );
                 let _ = Command::new("hyprctl")
                     .args(["output", "remove", trimmed])
                     .output();
@@ -180,15 +180,14 @@ impl VirtualDisplayGuard {
         fps: u8,
         create_virtual: bool,
     ) -> Self {
-        let mut primary_monitor = preferred_monitor
-            .and_then(|s| {
-                let c = s.trim().strip_prefix("wayland_").unwrap_or(s.trim());
-                if c.is_empty() || c == "auto" || c == "default" {
-                    None
-                } else {
-                    Some(c.to_string())
-                }
-            });
+        let mut primary_monitor = preferred_monitor.and_then(|s| {
+            let c = s.trim().strip_prefix("wayland_").unwrap_or(s.trim());
+            if c.is_empty() || c == "auto" || c == "default" {
+                None
+            } else {
+                Some(c.to_string())
+            }
+        });
 
         let mut virt_output_name = None;
 
@@ -369,10 +368,24 @@ mod tests {
 
     #[test]
     fn test_build_rules() {
-        let extend = build_hypr_monitor_rule("HEADLESS-2", 1920, 1080, 60, DisplayMode::Extend, Some("eDP-1"));
+        let extend = build_hypr_monitor_rule(
+            "HEADLESS-2",
+            1920,
+            1080,
+            60,
+            DisplayMode::Extend,
+            Some("eDP-1"),
+        );
         assert_eq!(extend, "HEADLESS-2,1920x1080@60,auto,1");
 
-        let mirror = build_hypr_monitor_rule("HEADLESS-2", 1920, 1080, 60, DisplayMode::Mirror, Some("eDP-1"));
+        let mirror = build_hypr_monitor_rule(
+            "HEADLESS-2",
+            1920,
+            1080,
+            60,
+            DisplayMode::Mirror,
+            Some("eDP-1"),
+        );
         assert_eq!(mirror, "HEADLESS-2,preferred,auto,1,mirror,eDP-1");
     }
 }

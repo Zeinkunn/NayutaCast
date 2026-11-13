@@ -7,14 +7,17 @@ mod win32 {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    pub mod pipewire_screen;
     pub mod pipewire_audio;
+    pub mod pipewire_screen;
+    pub mod v4l2_camera;
     pub mod virtual_display;
     pub mod wlr_screencopy;
     pub mod x11_screen;
-    pub mod v4l2_camera;
 
-    use super::{CaptureHandler, FrameConsumer, Source, SourceType, VideoCaptureSourceDescription, AudioCaptureSourceDescription};
+    use super::{
+        AudioCaptureSourceDescription, CaptureHandler, FrameConsumer, Source, SourceType,
+        VideoCaptureSourceDescription,
+    };
     use common::frame::{AudioFrame, VideoFrame};
     use thiserror::Error;
 
@@ -64,13 +67,13 @@ mod linux {
         fn default() -> Self {
             // Auto-detect display server
             let use_pipewire = std::env::var("WAYLAND_DISPLAY").is_ok();
-            
+
             let inner = if use_pipewire {
                 ScreenCaptureInner::PipeWire(pipewire_screen::PipeWireScreenCapture::default())
             } else {
                 ScreenCaptureInner::X11(x11_screen::X11ScreenCapture::default())
             };
-            
+
             Self { inner }
         }
     }
@@ -118,21 +121,27 @@ mod linux {
         ) -> Result<(), Self::Error> {
             if options.source.id.starts_with("x11_") {
                 let x11 = x11_screen::X11ScreenCapture::default();
-                return x11.start(options, consumer).map_err(|e| ScreenCaptureError::X11(e.to_string()));
+                return x11
+                    .start(options, consumer)
+                    .map_err(|e| ScreenCaptureError::X11(e.to_string()));
             }
             match &self.inner {
-                ScreenCaptureInner::PipeWire(pw) => pw.start(options, consumer)
+                ScreenCaptureInner::PipeWire(pw) => pw
+                    .start(options, consumer)
                     .map_err(|e| ScreenCaptureError::PipeWire(e.to_string())),
-                ScreenCaptureInner::X11(x11) => x11.start(options, consumer)
+                ScreenCaptureInner::X11(x11) => x11
+                    .start(options, consumer)
                     .map_err(|e| ScreenCaptureError::X11(e.to_string())),
             }
         }
 
         fn stop(&self) -> Result<(), Self::Error> {
             match &self.inner {
-                ScreenCaptureInner::PipeWire(pw) => pw.stop()
+                ScreenCaptureInner::PipeWire(pw) => pw
+                    .stop()
                     .map_err(|e| ScreenCaptureError::PipeWire(e.to_string())),
-                ScreenCaptureInner::X11(x11) => x11.stop()
+                ScreenCaptureInner::X11(x11) => x11
+                    .stop()
                     .map_err(|e| ScreenCaptureError::X11(e.to_string())),
             }
         }
@@ -166,12 +175,14 @@ mod linux {
             options: Self::CaptureOptions,
             consumer: S,
         ) -> Result<(), Self::Error> {
-            self.inner.start(options, consumer)
+            self.inner
+                .start(options, consumer)
                 .map_err(|e| AudioCaptureError::PipeWire(e.to_string()))
         }
 
         fn stop(&self) -> Result<(), Self::Error> {
-            self.inner.stop()
+            self.inner
+                .stop()
                 .map_err(|e| AudioCaptureError::PipeWire(e.to_string()))
         }
     }
@@ -204,12 +215,14 @@ mod linux {
             options: Self::CaptureOptions,
             consumer: S,
         ) -> Result<(), Self::Error> {
-            self.inner.start(options, consumer)
+            self.inner
+                .start(options, consumer)
                 .map_err(|e| CameraCaptureError::V4L2(e.to_string()))
         }
 
         fn stop(&self) -> Result<(), Self::Error> {
-            self.inner.stop()
+            self.inner
+                .stop()
                 .map_err(|e| CameraCaptureError::V4L2(e.to_string()))
         }
     }
@@ -231,9 +244,8 @@ pub use self::win32::{
 
 #[cfg(target_os = "linux")]
 pub use self::linux::{
-    AudioCapture, AudioCaptureError,
-    CameraCapture, CameraCaptureError,
-    ScreenCapture, ScreenCaptureError,
+    AudioCapture, AudioCaptureError, CameraCapture, CameraCaptureError, ScreenCapture,
+    ScreenCaptureError,
     virtual_display::{DisplayMode, HyprMonitorInfo, VirtualDisplayError, VirtualDisplayGuard},
 };
 
@@ -325,7 +337,9 @@ mod virtual_display_stub {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub use virtual_display_stub::{DisplayMode, HyprMonitorInfo, VirtualDisplayError, VirtualDisplayGuard};
+pub use virtual_display_stub::{
+    DisplayMode, HyprMonitorInfo, VirtualDisplayError, VirtualDisplayGuard,
+};
 
 #[cfg(target_os = "windows")]
 use common::win32::Direct3DDevice;

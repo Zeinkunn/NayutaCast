@@ -95,7 +95,7 @@ where
         thread::spawn(move || {
             // Create swresample context
             let mut swr_ctx: *mut SwrContext = null_mut();
-            
+
             unsafe {
                 swr_alloc_set_opts2(
                     &mut swr_ctx,
@@ -108,7 +108,7 @@ where
                     0,
                     null_mut(),
                 );
-                
+
                 swr_init(swr_ctx);
             }
 
@@ -119,7 +119,8 @@ where
                         / output.channels as usize
                 };
 
-                let mut output: Vec<O> = vec![O::default(); output_frames * output.channels as usize];
+                let mut output: Vec<O> =
+                    vec![O::default(); output_frames * output.channels as usize];
 
                 let result = unsafe {
                     swr_convert(

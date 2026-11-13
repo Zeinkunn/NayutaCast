@@ -176,7 +176,9 @@ impl<'a> Renderer<'a> {
         // Present an initial frame so Wayland compositors (Hyprland, Sway, etc.)
         // map and display the window immediately without waiting for the first stream frame.
         if let Ok(output) = surface.get_current_texture() {
-            let view = output.texture.create_view(&TextureViewDescriptor::default());
+            let view = output
+                .texture
+                .create_view(&TextureViewDescriptor::default());
             let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
                 label: Some("initial_clear"),
             });

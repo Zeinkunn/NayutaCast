@@ -10,6 +10,14 @@
 <br/>
 
 <div align="center">
+    <a href="https://github.com/Zeinkunn/NayutaCast/actions/workflows/rust.yml"><img src="https://github.com/Zeinkunn/NayutaCast/actions/workflows/rust.yml/badge.svg" alt="Rust"/></a>
+    <a href="https://github.com/Zeinkunn/NayutaCast/actions/workflows/test.yml"><img src="https://github.com/Zeinkunn/NayutaCast/actions/workflows/test.yml/badge.svg" alt="Test"/></a>
+    <a href="https://github.com/Zeinkunn/NayutaCast/actions/workflows/quality.yml"><img src="https://github.com/Zeinkunn/NayutaCast/actions/workflows/quality.yml/badge.svg" alt="Quality"/></a>
+    <a href="https://github.com/Zeinkunn/NayutaCast/actions/workflows/build.yml"><img src="https://github.com/Zeinkunn/NayutaCast/actions/workflows/build.yml/badge.svg" alt="Build"/></a>
+    <a href="https://github.com/Zeinkunn/NayutaCast/actions/workflows/release.yml"><img src="https://github.com/Zeinkunn/NayutaCast/actions/workflows/release.yml/badge.svg" alt="Release"/></a>
+</div>
+
+<div align="center">
     <a href="https://github.com/Zeinkunn/NayutaCast/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Zeinkunn/NayutaCast" alt="License"/></a>
     <a href="https://github.com/Zeinkunn/NayutaCast/commits/main"><img src="https://img.shields.io/github/last-commit/Zeinkunn/NayutaCast" alt="Last Commit"/></a>
     <a href="https://github.com/Zeinkunn/NayutaCast/stargazers"><img src="https://img.shields.io/github/stars/Zeinkunn/NayutaCast" alt="Stars"/></a>

@@ -43,11 +43,12 @@ impl NayutaCastApp {
         let app_icon_tex = if let Ok(img) = image::load_from_memory(icon_bytes) {
             let rgba = img.to_rgba8();
             let (w, h) = rgba.dimensions();
-            let color_image = egui::ColorImage::from_rgba_unmultiplied(
-                [w as usize, h as usize],
-                rgba.as_raw(),
-            );
-            Some(cc.egui_ctx.load_texture("app_icon", color_image, TextureOptions::LINEAR))
+            let color_image =
+                egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], rgba.as_raw());
+            Some(
+                cc.egui_ctx
+                    .load_texture("app_icon", color_image, TextureOptions::LINEAR),
+            )
         } else {
             None
         };
@@ -233,7 +234,8 @@ impl eframe::App for NayutaCastApp {
                         let action = render_settings(ui, &mut self.settings_state);
                         if action.saved {
                             self.settings = self.settings_state.local.clone();
-                            self.display_mode = DisplayMode::from_str_lossy(&self.settings.display_mode);
+                            self.display_mode =
+                                DisplayMode::from_str_lossy(&self.settings.display_mode);
                             let dm = self.device_mgr.clone();
                             let new_name = self.settings.device_name.clone();
                             self.rt.spawn(async move {
@@ -242,7 +244,8 @@ impl eframe::App for NayutaCastApp {
                         }
                         if action.back {
                             self.settings = self.settings_state.local.clone();
-                            self.display_mode = DisplayMode::from_str_lossy(&self.settings.display_mode);
+                            self.display_mode =
+                                DisplayMode::from_str_lossy(&self.settings.display_mode);
                             self.view = AppView::Scanner;
                         }
                     }

@@ -26,7 +26,10 @@ pub enum LiveMuxerError {
     #[error("audio encoder setup failed: {0}")]
     AudioEncoder(String),
     #[error("muxer container '{format}' setup failed: {detail}")]
-    Container { format: &'static str, detail: String },
+    Container {
+        format: &'static str,
+        detail: String,
+    },
     #[error("encode error: {0}")]
     Encode(String),
 }
@@ -467,11 +470,15 @@ impl UniversalLiveMuxer {
                 c
             };
             if c.is_null() {
-                return Err(LiveMuxerError::VideoEncoder("H.264 encoder not found".into()));
+                return Err(LiveMuxerError::VideoEncoder(
+                    "H.264 encoder not found".into(),
+                ));
             }
             ctx = unsafe { avcodec_alloc_context3(c) };
             if ctx.is_null() {
-                return Err(LiveMuxerError::VideoEncoder("avcodec_alloc_context3 failed".into()));
+                return Err(LiveMuxerError::VideoEncoder(
+                    "avcodec_alloc_context3 failed".into(),
+                ));
             }
             c
         };
@@ -575,7 +582,9 @@ impl UniversalLiveMuxer {
         }
         let mut ctx = unsafe { avcodec_alloc_context3(codec) };
         if ctx.is_null() {
-            return Err(LiveMuxerError::AudioEncoder("avcodec_alloc_context3 failed".into()));
+            return Err(LiveMuxerError::AudioEncoder(
+                "avcodec_alloc_context3 failed".into(),
+            ));
         }
 
         let ctx_mut = unsafe { &mut *ctx };
@@ -675,15 +684,19 @@ impl UniversalLiveMuxer {
         }
 
         let mut out = MuxerOutput::default();
-        let target_audio_samples = (self.v_frame_idx * self.options.audio_sample_rate as i64)
-            / (self.options.fps as i64);
+        let target_audio_samples =
+            (self.v_frame_idx * self.options.audio_sample_rate as i64) / (self.options.fps as i64);
         while self.a_samples_pts + (self.a_fifo_l.len() as i64) < target_audio_samples {
             let need = (target_audio_samples - self.a_samples_pts) as usize;
             let chunk = need.clamp(self.a_frame_size, self.a_frame_size * 2);
-            self.a_fifo_l
-                .extend(std::iter::repeat_n(0.0f32, chunk.saturating_sub(self.a_fifo_l.len())));
-            self.a_fifo_r
-                .extend(std::iter::repeat_n(0.0f32, chunk.saturating_sub(self.a_fifo_r.len())));
+            self.a_fifo_l.extend(std::iter::repeat_n(
+                0.0f32,
+                chunk.saturating_sub(self.a_fifo_l.len()),
+            ));
+            self.a_fifo_r.extend(std::iter::repeat_n(
+                0.0f32,
+                chunk.saturating_sub(self.a_fifo_r.len()),
+            ));
             if self.a_fifo_l.len() < self.a_frame_size {
                 let pad = self.a_frame_size - self.a_fifo_l.len();
                 self.a_fifo_l.extend(std::iter::repeat_n(0.0f32, pad));
@@ -702,7 +715,9 @@ impl UniversalLiveMuxer {
         }
 
         if unsafe { avcodec_send_frame(self.v_ctx, self.v_frame) } < 0 {
-            return Err(LiveMuxerError::Encode("avcodec_send_frame video failed".into()));
+            return Err(LiveMuxerError::Encode(
+                "avcodec_send_frame video failed".into(),
+            ));
         }
 
         loop {
@@ -728,8 +743,10 @@ impl UniversalLiveMuxer {
             }
             unsafe {
                 let af = &mut *self.a_frame;
-                let dst_l = std::slice::from_raw_parts_mut(af.data[0] as *mut f32, self.a_frame_size);
-                let dst_r = std::slice::from_raw_parts_mut(af.data[1] as *mut f32, self.a_frame_size);
+                let dst_l =
+                    std::slice::from_raw_parts_mut(af.data[0] as *mut f32, self.a_frame_size);
+                let dst_r =
+                    std::slice::from_raw_parts_mut(af.data[1] as *mut f32, self.a_frame_size);
                 dst_l.copy_from_slice(&self.a_fifo_l[..self.a_frame_size]);
                 dst_r.copy_from_slice(&self.a_fifo_r[..self.a_frame_size]);
                 af.pts = self.a_samples_pts;
@@ -739,7 +756,9 @@ impl UniversalLiveMuxer {
             self.a_samples_pts += self.a_frame_size as i64;
 
             if unsafe { avcodec_send_frame(self.a_ctx, self.a_frame) } < 0 {
-                return Err(LiveMuxerError::Encode("avcodec_send_frame audio failed".into()));
+                return Err(LiveMuxerError::Encode(
+                    "avcodec_send_frame audio failed".into(),
+                ));
             }
 
             loop {
@@ -819,7 +838,9 @@ impl UniversalLiveMuxer {
         };
 
         if unsafe { av_frame_make_writable(dst_frame) } < 0 {
-            return Err(LiveMuxerError::Encode("video staging frame not writable".into()));
+            return Err(LiveMuxerError::Encode(
+                "video staging frame not writable".into(),
+            ));
         }
 
         let src_w = (src.width as usize).min(w);
@@ -831,7 +852,10 @@ impl UniversalLiveMuxer {
             let df = &mut *dst_frame;
             let dst_y_stride = df.linesize[0] as usize;
             let y_slice = std::slice::from_raw_parts_mut(df.data[0], dst_y_stride * h);
-            let src_y = std::slice::from_raw_parts(src.data[0] as *const u8, src_y_stride * src.height as usize);
+            let src_y = std::slice::from_raw_parts(
+                src.data[0] as *const u8,
+                src_y_stride * src.height as usize,
+            );
             for row in 0..src_h {
                 let s_off = row * src_y_stride;
                 let d_off = row * dst_y_stride;
@@ -890,9 +914,13 @@ impl UniversalLiveMuxer {
                     );
                     for row in 0..(src_h / 2) {
                         u_plane[row * dst_u_stride..row * dst_u_stride + src_w / 2]
-                            .copy_from_slice(&src_u[row * src_uv_stride..row * src_uv_stride + src_w / 2]);
+                            .copy_from_slice(
+                                &src_u[row * src_uv_stride..row * src_uv_stride + src_w / 2],
+                            );
                         v_plane[row * dst_v_stride..row * dst_v_stride + src_w / 2]
-                            .copy_from_slice(&src_v[row * src_v_stride..row * src_v_stride + src_w / 2]);
+                            .copy_from_slice(
+                                &src_v[row * src_v_stride..row * src_v_stride + src_w / 2],
+                            );
                     }
                 }
             }
@@ -990,8 +1018,14 @@ mod tests {
         .expect("init UniversalLiveMuxer");
 
         let init = muxer.fmp4_init_segment();
-        assert!(init.windows(4).any(|w| w == b"ftyp"), "missing ftyp in fMP4 init");
-        assert!(init.windows(4).any(|w| w == b"moov"), "missing moov in fMP4 init");
+        assert!(
+            init.windows(4).any(|w| w == b"ftyp"),
+            "missing ftyp in fMP4 init"
+        );
+        assert!(
+            init.windows(4).any(|w| w == b"moov"),
+            "missing moov in fMP4 init"
+        );
 
         let y = vec![90u8; 320 * 240];
         let uv = vec![128u8; 320 * 120];
@@ -1023,16 +1057,19 @@ mod tests {
             for c in out.mpegts_chunks {
                 total_ts.extend_from_slice(&c);
             }
-            if let Some(frag) = out.mp4_fragment {
-                if frag.windows(4).any(|w| w == b"moof") {
-                    saw_mp4_frag = true;
-                }
+            if let Some(frag) = out.mp4_fragment
+                && frag.windows(4).any(|w| w == b"moof")
+            {
+                saw_mp4_frag = true;
             }
         }
 
         assert!(!total_ts.is_empty(), "expected non-empty MPEG-TS output");
         assert_eq!(total_ts[0], 0x47, "MPEG-TS must start with 0x47 sync byte");
-        assert!(saw_mp4_frag, "expected fragmented MP4 moof chunk after GOP boundary");
+        assert!(
+            saw_mp4_frag,
+            "expected fragmented MP4 moof chunk after GOP boundary"
+        );
 
         let playlist = muxer.hls_playlist();
         assert!(playlist.starts_with("#EXTM3U"));

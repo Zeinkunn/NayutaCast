@@ -1,11 +1,7 @@
-use egui::{pos2, vec2, Color32, FontId, Rect, TextureHandle, Ui};
 use crate::theme::*;
+use egui::{Color32, FontId, Rect, TextureHandle, Ui, pos2, vec2};
 
-pub fn render_splash(
-    ui: &mut Ui,
-    icon_tex: Option<&TextureHandle>,
-    elapsed: f32,
-) -> bool {
+pub fn render_splash(ui: &mut Ui, icon_tex: Option<&TextureHandle>, elapsed: f32) -> bool {
     // Continuously request repaints for smooth animation
     ui.ctx().request_repaint();
 
@@ -16,10 +12,8 @@ pub fn render_splash(
 
     // 1. Draw centered avatar squircle icon with ambient glow
     let icon_size = 112.0;
-    let icon_rect = Rect::from_center_size(
-        pos2(center.x, center.y - 48.0),
-        vec2(icon_size, icon_size),
-    );
+    let icon_rect =
+        Rect::from_center_size(pos2(center.x, center.y - 48.0), vec2(icon_size, icon_size));
 
     // Ambient glow shadow
     let glow_radius = (elapsed * 2.0).sin() * 4.0 + 20.0;

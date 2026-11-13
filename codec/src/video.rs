@@ -530,11 +530,7 @@ impl VideoEncoder {
                     }
                     unsafe {
                         av_frame_unref(self.frame);
-                        if av_hwframe_get_buffer(
-                            (*self.context).hw_frames_ctx,
-                            self.frame,
-                            0,
-                        ) != 0
+                        if av_hwframe_get_buffer((*self.context).hw_frames_ctx, self.frame, 0) != 0
                         {
                             return false;
                         }

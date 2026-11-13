@@ -57,8 +57,8 @@ impl CaptureHandler for X11ScreenCapture {
     type CaptureOptions = VideoCaptureSourceDescription;
 
     fn get_sources() -> Result<Vec<Source>, Self::Error> {
-        let (conn, screen_num) = x11rb::connect(None)
-            .map_err(|e| ScreenCaptureError::X11Connection(e.to_string()))?;
+        let (conn, screen_num) =
+            x11rb::connect(None).map_err(|e| ScreenCaptureError::X11Connection(e.to_string()))?;
 
         let setup = conn.setup();
         let screen = setup
@@ -77,7 +77,10 @@ impl CaptureHandler for X11ScreenCapture {
                             if info.width > 0 && info.height > 0 {
                                 sources.push(Source {
                                     id: format!("x11_crtc_{}", crtc),
-                                    name: format!("Screen {} ({}x{})", idx, info.width, info.height),
+                                    name: format!(
+                                        "Screen {} ({}x{})",
+                                        idx, info.width, info.height
+                                    ),
                                     index: idx,
                                     kind: SourceType::Screen,
                                     is_default: idx == 0,
@@ -92,7 +95,10 @@ impl CaptureHandler for X11ScreenCapture {
         if sources.is_empty() {
             sources.push(Source {
                 id: "x11_screen_0".to_string(),
-                name: format!("Default Screen ({}x{})", screen.width_in_pixels, screen.height_in_pixels),
+                name: format!(
+                    "Default Screen ({}x{})",
+                    screen.width_in_pixels, screen.height_in_pixels
+                ),
                 index: 0,
                 kind: SourceType::Screen,
                 is_default: true,
@@ -140,8 +146,8 @@ fn run_x11_capture<S: FrameConsumer<Frame = VideoFrame>>(
     options: VideoCaptureSourceDescription,
     mut consumer: S,
 ) -> Result<(), ScreenCaptureError> {
-    let (conn, screen_num) = x11rb::connect(None)
-        .map_err(|e| ScreenCaptureError::X11Connection(e.to_string()))?;
+    let (conn, screen_num) =
+        x11rb::connect(None).map_err(|e| ScreenCaptureError::X11Connection(e.to_string()))?;
 
     let setup = conn.setup();
     let screen = setup
@@ -174,11 +180,7 @@ fn run_x11_capture<S: FrameConsumer<Frame = VideoFrame>>(
 
     if shm_supported {
         unsafe {
-            let shmid = libc::shmget(
-                libc::IPC_PRIVATE,
-                byte_size,
-                libc::IPC_CREAT | 0o777,
-            );
+            let shmid = libc::shmget(libc::IPC_PRIVATE, byte_size, libc::IPC_CREAT | 0o777);
             if shmid >= 0 {
                 let shmaddr = libc::shmat(shmid, null(), 0);
                 if shmaddr != libc::MAP_FAILED as *mut c_void {
@@ -240,9 +242,7 @@ fn run_x11_capture<S: FrameConsumer<Frame = VideoFrame>>(
                 0,
             ) {
                 if cookie.reply().is_ok() {
-                    let bgra_slice = unsafe {
-                        std::slice::from_raw_parts(shmaddr, byte_size)
-                    };
+                    let bgra_slice = unsafe { std::slice::from_raw_parts(shmaddr, byte_size) };
                     bgra_to_nv12(
                         bgra_slice,
                         src_width as usize,
@@ -287,7 +287,11 @@ fn run_x11_capture<S: FrameConsumer<Frame = VideoFrame>>(
             static LOGGED: AtomicBool = AtomicBool::new(false);
             if !LOGGED.swap(true, Ordering::Relaxed) {
                 let non_zero = y_plane.iter().any(|&b| b > 0);
-                log::info!("X11 capture first frame sinked: has_data={}, sample={:?}", non_zero, &y_plane[1000..1010]);
+                log::info!(
+                    "X11 capture first frame sinked: has_data={}, sample={:?}",
+                    non_zero,
+                    &y_plane[1000..1010]
+                );
             }
             frame.data[0] = y_plane.as_ptr() as *const c_void;
             frame.data[1] = uv_plane.as_ptr() as *const c_void;

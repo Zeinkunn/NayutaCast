@@ -132,7 +132,9 @@ pub async fn connect_smart_tv_protocols(
             }
             CastProtocol::BrowserFallback => {
                 // Only use BrowserFallback automatically when NO other TV protocol was listed.
-                let only_browser = protocols.iter().all(|p| *p == CastProtocol::BrowserFallback);
+                let only_browser = protocols
+                    .iter()
+                    .all(|p| *p == CastProtocol::BrowserFallback);
                 if only_browser {
                     return Ok(start_browser_watch(ctx).await);
                 }
@@ -393,17 +395,16 @@ mod tests {
         let key_der = std::fs::read(&key_der_path).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
 
-        let server_cfg = ServerConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![CertificateDer::from(cert_der)],
-            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_der)),
-        )
-        .unwrap();
+        let server_cfg =
+            ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_no_client_auth()
+                .with_single_cert(
+                    vec![CertificateDer::from(cert_der)],
+                    PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_der)),
+                )
+                .unwrap();
 
         let acceptor = TlsAcceptor::from(Arc::new(server_cfg));
         let cast_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -460,8 +461,18 @@ mod tests {
                 } else if payload.contains("\"LOAD\"") {
                     let val: serde_json::Value = serde_json::from_str(&payload).unwrap();
                     let url = val["media"]["contentId"].as_str().unwrap().to_string();
-                    let host_port = url.strip_prefix("http://").unwrap().split('/').next().unwrap();
-                    let path = url.strip_prefix("http://").unwrap().split_once('/').unwrap().1;
+                    let host_port = url
+                        .strip_prefix("http://")
+                        .unwrap()
+                        .split('/')
+                        .next()
+                        .unwrap();
+                    let path = url
+                        .strip_prefix("http://")
+                        .unwrap()
+                        .split_once('/')
+                        .unwrap()
+                        .1;
                     let mut c = tokio::net::TcpStream::connect(host_port).await.unwrap();
                     c.write_all(
                         format!("GET /{} HTTP/1.1\r\nHost: {}\r\n\r\n", path, host_port).as_bytes(),
@@ -524,7 +535,10 @@ mod tests {
         .await
         .expect("Google Cast TLS connect succeeds");
 
-        assert!(matches!(&*state.read().await, CastingState::Connected { .. }));
+        assert!(matches!(
+            &*state.read().await,
+            CastingState::Connected { .. }
+        ));
         backend.stop().await;
         http_srv.stop();
     }

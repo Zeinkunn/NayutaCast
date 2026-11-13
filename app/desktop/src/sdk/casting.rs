@@ -262,14 +262,15 @@ fn pick_screen_source(
     }
 
     let clean_target = target_monitor.trim();
-    if !clean_target.is_empty() && !clean_target.eq_ignore_ascii_case("auto") {
-        if let Some(found) = screens.iter().find(|s| {
+    if !clean_target.is_empty()
+        && !clean_target.eq_ignore_ascii_case("auto")
+        && let Some(found) = screens.iter().find(|s| {
             s.id == clean_target
                 || s.id.strip_prefix("wayland_") == Some(clean_target)
                 || s.name.contains(clean_target)
-        }) {
-            return found.clone();
-        }
+        })
+    {
+        return found.clone();
     }
 
     screens
@@ -292,13 +293,13 @@ fn pick_audio_source(settings: &AppSettings) -> Option<Source> {
     }
     let audio_sources = Capture::get_sources(SourceType::Audio).unwrap_or_default();
     let pref = settings.audio_source.trim();
-    if !pref.is_empty() && !pref.eq_ignore_ascii_case("auto") {
-        if let Some(found) = audio_sources
+    if !pref.is_empty()
+        && !pref.eq_ignore_ascii_case("auto")
+        && let Some(found) = audio_sources
             .iter()
             .find(|s| s.id == pref || s.name == pref || s.name.contains(pref))
-        {
-            return Some(found.clone());
-        }
+    {
+        return Some(found.clone());
     }
     audio_sources
         .iter()
@@ -322,20 +323,22 @@ fn spawn_srt_sender(
 
     let join = std::thread::Builder::new()
         .name("NayutaCastSrtOwner".to_string())
-        .spawn(move || match nayutacast::create_sender(&sender_options, sink, ()) {
-            Ok(sender) => {
-                let desc = sender.get_description().clone();
-                let _ = init_tx.send(Ok(desc));
-                while !stop_thr.load(Ordering::SeqCst) {
-                    count_thr.store(sender.client_count(), Ordering::SeqCst);
-                    std::thread::sleep(Duration::from_millis(100));
+        .spawn(
+            move || match nayutacast::create_sender(&sender_options, sink, ()) {
+                Ok(sender) => {
+                    let desc = sender.get_description().clone();
+                    let _ = init_tx.send(Ok(desc));
+                    while !stop_thr.load(Ordering::SeqCst) {
+                        count_thr.store(sender.client_count(), Ordering::SeqCst);
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                    drop(sender);
                 }
-                drop(sender);
-            }
-            Err(e) => {
-                let _ = init_tx.send(Err(format!("{:?}", e)));
-            }
-        })?;
+                Err(e) => {
+                    let _ = init_tx.send(Err(format!("{:?}", e)));
+                }
+            },
+        )?;
 
     let desc = init_rx
         .recv_timeout(Duration::from_secs(6))
@@ -364,7 +367,11 @@ fn spawn_encoder_worker(
             let mut muxer = match UniversalLiveMuxer::new(mux_opts.clone()) {
                 Ok(m) => m,
                 Err(e) => {
-                    log::warn!("Muxer init {:?} failed ({}); retrying x264", mux_opts.encoder_type, e);
+                    log::warn!(
+                        "Muxer init {:?} failed ({}); retrying x264",
+                        mux_opts.encoder_type,
+                        e
+                    );
                     let mut fallback = mux_opts.clone();
                     fallback.encoder_type = VideoEncoderType::X264;
                     match UniversalLiveMuxer::new(fallback) {
@@ -412,6 +419,7 @@ fn spawn_encoder_worker(
     Ok(join)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn start_smart_tv_capture(
     source: Source,
     audio_source: Option<Source>,
@@ -503,8 +511,8 @@ impl CastingSession {
         let fps = settings.frame_rate.max(1);
         let encoder_type = resolve_encoder_type(&settings.video_encoder);
 
-        let lan_ip = net_utils::resolve_lan_ip_for_target(Some(device.ip))
-            .unwrap_or(Ipv4Addr::LOCALHOST);
+        let lan_ip =
+            net_utils::resolve_lan_ip_for_target(Some(device.ip)).unwrap_or(Ipv4Addr::LOCALHOST);
 
         log::info!(
             "Starting universal casting session to '{}' ({}) via LAN IP {} (mode={:?})",
@@ -551,8 +559,7 @@ impl CastingSession {
         let http_server_holder: Arc<Mutex<Option<HttpStreamServer>>> = Arc::new(Mutex::new(None));
         let backend_holder: Arc<tokio::sync::Mutex<Option<ActiveCastBackend>>> =
             Arc::new(tokio::sync::Mutex::new(None));
-        let pipeline_shared: Arc<Mutex<Option<SmartTvPipelineShared>>> =
-            Arc::new(Mutex::new(None));
+        let pipeline_shared: Arc<Mutex<Option<SmartTvPipelineShared>>> = Arc::new(Mutex::new(None));
 
         let target_name = device.name.clone();
         let target_ip = device.ip.to_string();
@@ -630,13 +637,15 @@ impl CastingSession {
                                 key_frame_interval: 24,
                             },
                         }),
-                        audio: audio_source.clone().map(|src| NayutacastSenderTrackOptions {
-                            source: src,
-                            options: AudioOptions {
-                                sample_rate: settings_bg.audio_sample_rate as u64,
-                                bit_rate: (settings_bg.audio_bitrate_kbps as u64) * 1_000,
-                            },
-                        }),
+                        audio: audio_source
+                            .clone()
+                            .map(|src| NayutacastSenderTrackOptions {
+                                source: src,
+                                options: AudioOptions {
+                                    sample_rate: settings_bg.audio_sample_rate as u64,
+                                    bit_rate: (settings_bg.audio_bitrate_kbps as u64) * 1_000,
+                                },
+                            }),
                     },
                 };
 
@@ -675,8 +684,7 @@ impl CastingSession {
 
             if remaining.is_empty() {
                 *state_bg.write().await = CastingState::Failed {
-                    error: srt_error
-                        .unwrap_or_else(|| "Koneksi NayutaCast SRT gagal".to_string()),
+                    error: srt_error.unwrap_or_else(|| "Koneksi NayutaCast SRT gagal".to_string()),
                     tried_protocols: vec!["NayutaCast Native (SRT)".to_string()],
                     browser_url,
                 };

@@ -118,10 +118,7 @@ impl CaptureHandler for AudioCapture {
                 sample_rate: options.sample_rate,
                 channels: 2,
             },
-            Output {
-                consumer,
-                frame,
-            },
+            Output { consumer, frame },
         )?;
 
         let mut playing = true;

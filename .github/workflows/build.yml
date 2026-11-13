@@ -1,0 +1,127 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-desktop:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+          - name: windows-x64
+            os: windows-latest
+          - name: macos-arm64
+            os: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup system dependencies
+        uses: ./.github/actions/setup-deps
+
+      - name: Setup Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: build-${{ matrix.name }}
+
+      - name: Build native release binaries
+        run: cargo build --release --locked -p nayutacast-app -p nayutacast-server -p nayutacast-example
+
+      - name: Stage CI build outputs (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p ci-dist
+          cp target/release/nayutacast-app ci-dist/
+          cp target/release/nayutacast-server ci-dist/
+          cp target/release/nayutacast-example ci-dist/
+
+      - name: Stage CI build outputs (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path ci-dist | Out-Null
+          Copy-Item target/release/nayutacast-app.exe ci-dist/
+          Copy-Item target/release/nayutacast-server.exe ci-dist/
+          Copy-Item target/release/nayutacast-example.exe ci-dist/
+
+      - name: Upload CI build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nayutacast-ci-${{ matrix.name }}
+          path: ci-dist/*
+          retention-days: 7
+
+  build-android:
+    name: Build (android-arm64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Rust stable toolchain with Android ARM64 target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: build-android-arm64
+
+      - name: Setup Android SDK & NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 35, NDK 27 & CMake
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;27.0.12077973" \
+            "cmake;3.22.1"
+          echo "${ANDROID_HOME}/cmake/3.22.1/bin" >> "$GITHUB_PATH"
+
+      - name: Cache Gradle packages
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build Android native Rust + Kotlin AAR library
+        working-directory: app/android
+        run: |
+          chmod +x gradlew
+          ./gradlew :nayutacast:assembleRelease --no-daemon --stacktrace
+
+      - name: Upload Android AAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nayutacast-ci-android-arm64
+          path: android/build/outputs/aar/*.aar
+          retention-days: 7

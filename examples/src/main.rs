@@ -7,12 +7,12 @@ use anyhow::Result;
 use clap::Parser;
 use nayutacast::{
     AVFrameStreamPlayer, AVFrameStreamPlayerOptions, AudioOptions, Capture, DiscoveryContext,
-    DiscoveryObserver, DiscoveryService, NayutacastReceiver, NayutacastReceiverOptions,
-    NayutacastSender, NayutacastSenderMediaOptions, NayutacastSenderOptions,
-    NayutacastSenderTrackOptions, MediaStreamDescription, Size, SourceType, TransportOptions,
-    TransportStrategy, VideoDecoderType, VideoEncoderType, VideoOptions,
-    VideoRenderOptionsBuilder, VideoRenderSurfaceOptions, create_receiver, create_sender,
-    get_runtime_handle, shutdown, startup,
+    DiscoveryObserver, DiscoveryService, MediaStreamDescription, NayutacastReceiver,
+    NayutacastReceiverOptions, NayutacastSender, NayutacastSenderMediaOptions,
+    NayutacastSenderOptions, NayutacastSenderTrackOptions, Size, SourceType, TransportOptions,
+    TransportStrategy, VideoDecoderType, VideoEncoderType, VideoOptions, VideoRenderOptionsBuilder,
+    VideoRenderSurfaceOptions, create_receiver, create_sender, get_runtime_handle, shutdown,
+    startup,
 };
 
 use winit::{
@@ -85,12 +85,19 @@ impl Sender {
         let screens = Capture::get_sources(SourceType::Screen)?;
         println!("[*] Discovered {} screen source(s):", screens.len());
         for (i, s) in screens.iter().enumerate() {
-            println!("    [{}] {} (id: {}, default: {})", i, s.name, s.id, s.is_default);
+            println!(
+                "    [{}] {} (id: {}, default: {})",
+                i, s.name, s.id, s.is_default
+            );
         }
         let chosen_screen = if let Some(idx) = configure.monitor {
             screens.get(idx).cloned()
         } else {
-            screens.iter().find(|it| it.is_default).cloned().or_else(|| screens.first().cloned())
+            screens
+                .iter()
+                .find(|it| it.is_default)
+                .cloned()
+                .or_else(|| screens.first().cloned())
         };
 
         let mut video = None;
@@ -106,12 +113,19 @@ impl Sender {
         let audio_sources = Capture::get_sources(SourceType::Audio)?;
         println!("[*] Discovered {} audio source(s):", audio_sources.len());
         for (i, s) in audio_sources.iter().enumerate() {
-            println!("    [{}] {} (id: {}, default: {})", i, s.name, s.id, s.is_default);
+            println!(
+                "    [{}] {} (id: {}, default: {})",
+                i, s.name, s.id, s.is_default
+            );
         }
         let chosen_audio = if let Some(idx) = configure.audio_source {
             audio_sources.get(idx).cloned()
         } else {
-            audio_sources.iter().find(|it| it.is_default).cloned().or_else(|| audio_sources.first().cloned())
+            audio_sources
+                .iter()
+                .find(|it| it.is_default)
+                .cloned()
+                .or_else(|| audio_sources.first().cloned())
         };
 
         let mut audio = None;
@@ -307,7 +321,10 @@ impl ApplicationHandler<Events> for App {
                 let _ = self.event_loop.send_event(Events::StartReceiver);
             }
             _ => {
-                eprintln!("[!] Unknown mode: '{}'. Expected 'sender' or 'receiver'.", mode);
+                eprintln!(
+                    "[!] Unknown mode: '{}'. Expected 'sender' or 'receiver'.",
+                    mode
+                );
             }
         }
     }
@@ -467,7 +484,9 @@ fn main() -> Result<()> {
             _ => None,
         })
         .unwrap_or(log::LevelFilter::Info);
-    simple_logger::SimpleLogger::new().with_level(level).init()?;
+    simple_logger::SimpleLogger::new()
+        .with_level(level)
+        .init()?;
 
     Configure::parse();
 
@@ -496,7 +515,10 @@ fn main() -> Result<()> {
                     }
                     "" => (),
                     _ => {
-                        println!("Unknown command: '{}'. Type 's' (Sender), 'r' (Receiver), or 'k' (Stop).", cmd);
+                        println!(
+                            "Unknown command: '{}'. Type 's' (Sender), 'r' (Receiver), or 'k' (Stop).",
+                            cmd
+                        );
                     }
                 }
             }

@@ -1,0 +1,104 @@
+name: Setup NayutaCast System Dependencies
+description: Install native build dependencies (FFmpeg, CMake, Clang/LLVM, PipeWire, VAAPI, Wayland/X11) across Linux, macOS, and Windows.
+
+runs:
+  using: composite
+  steps:
+    - name: Install Linux dependencies
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          build-essential \
+          pkg-config \
+          clang \
+          libclang-dev \
+          llvm-dev \
+          cmake \
+          tclsh \
+          libssl-dev \
+          libpipewire-0.3-dev \
+          libva-dev \
+          libx11-dev \
+          libxrandr-dev \
+          libxfixes-dev \
+          libxdamage-dev \
+          libv4l-dev \
+          libasound2-dev \
+          libglib2.0-dev \
+          libgtk-3-dev \
+          libwayland-dev \
+          libxkbcommon-dev \
+          libavcodec-dev \
+          libavutil-dev \
+          libavformat-dev \
+          libavdevice-dev \
+          libswscale-dev \
+          libswresample-dev
+        if command -v llvm-config >/dev/null 2>&1; then
+          echo "LIBCLANG_PATH=$(llvm-config --libdir)" >> "$GITHUB_ENV"
+        fi
+
+    - name: Install macOS dependencies
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        brew install ffmpeg@7 cmake pkg-config llvm
+        FFMPEG_PREFIX="$(brew --prefix ffmpeg@7)"
+        LLVM_PREFIX="$(brew --prefix llvm)"
+        echo "${FFMPEG_PREFIX}/bin" >> "$GITHUB_PATH"
+        echo "PKG_CONFIG_PATH=${FFMPEG_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
+        echo "LIBCLANG_PATH=${LLVM_PREFIX}/lib" >> "$GITHUB_ENV"
+        echo "MACOSX_DEPLOYMENT_TARGET=14.0" >> "$GITHUB_ENV"
+
+    - name: Restore Windows FFmpeg cache
+      if: runner.os == 'Windows'
+      id: cache-win-ffmpeg
+      uses: actions/cache@v4
+      with:
+        path: C:\ffmpeg-win64
+        key: ffmpeg-win64-gpl-shared-n8.1-v1
+
+    - name: Download Windows FFmpeg SDK
+      if: runner.os == 'Windows' && steps.cache-win-ffmpeg.outputs.cache-hit != 'true'
+      shell: pwsh
+      run: |
+        $ProgressPreference = 'SilentlyContinue'
+        $fallbackUrl = 'https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-gpl-shared-8.1.zip'
+        $url = $fallbackUrl
+        try {
+          $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/FFmpeg-Builds/FFmpeg-Builds/releases/tags/latest' -TimeoutSec 20
+          $asset = $rel.assets | Where-Object { $_.name -match '^ffmpeg-n8\..*win64-gpl-shared.*\.zip$' } | Select-Object -First 1
+          if (-not $asset) {
+            $asset = $rel.assets | Where-Object { $_.name -match 'win64-gpl-shared.*\.zip$' } | Select-Object -First 1
+          }
+          if ($asset) {
+            $url = $asset.browser_download_url
+          }
+        } catch {
+          Write-Host "GitHub API lookup failed, using fallback URL: $fallbackUrl"
+        }
+        Write-Host "Downloading Windows FFmpeg from: $url"
+        $zipPath = "$env:RUNNER_TEMP\ffmpeg-win64.zip"
+        $extractDir = "$env:RUNNER_TEMP\ffmpeg-extract"
+        Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing
+        if (Test-Path $extractDir) { Remove-Item -Recurse -Force $extractDir }
+        Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+        $rootDir = Get-ChildItem -Path $extractDir -Directory | Select-Object -First 1
+        if (Test-Path 'C:\ffmpeg-win64') { Remove-Item -Recurse -Force 'C:\ffmpeg-win64' }
+        Move-Item -Path $rootDir.FullName -Destination 'C:\ffmpeg-win64'
+        Remove-Item -Force $zipPath
+
+    - name: Configure Windows FFmpeg and LLVM environment
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $llvmBin = 'C:\Program Files\LLVM\bin'
+        if (-not (Test-Path "$llvmBin\libclang.dll")) {
+          choco install llvm -y --no-progress
+        }
+        "FFMPEG_DIR=C:\ffmpeg-win64" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        "LIBCLANG_PATH=$llvmBin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        "C:\ffmpeg-win64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        "$llvmBin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append

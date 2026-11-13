@@ -11,42 +11,25 @@ pub trait EasyAtomic {
 
     /// Update atomic value.
     ///
-    /// ```no_run
-    /// use std::sync::atomic::{AtomicU8, Ordering};
-    /// use sync::atomic::EasyAtomic;
+    /// ```
+    /// use std::sync::atomic::AtomicU8;
+    /// use nayutacast_common::atomic::EasyAtomic;
     ///
-    /// impl EsayAtomic for AtomicU8 {
-    ///     type Item = u8;
-    ///
-    ///     fn get(&self) -> Self::Item {
-    ///         self.load(Ordering::Relaxed)
-    ///     }
-    ///
-    ///     fn update(&self, value: Self::Item) -> Self::Item {
-    ///         self.swap(value, Ordering::Relaxed)
-    ///     }
-    /// }
-    /// ````
+    /// let value = AtomicU8::new(1);
+    /// assert_eq!(value.set(2), 1);
+    /// assert_eq!(value.get(), 2);
+    /// ```
     fn set(&self, value: Self::Item) -> Self::Item;
 
     /// Get atomic value.
     ///
-    /// ```no_run
-    /// use std::sync::atomic::{AtomicU8, Ordering};
-    /// use sync::atomic::EasyAtomic;
+    /// ```
+    /// use std::sync::atomic::AtomicU8;
+    /// use nayutacast_common::atomic::EasyAtomic;
     ///
-    /// impl EsayAtomic for AtomicU8 {
-    ///     type Item = u8;
-    ///
-    ///     fn get(&self) -> Self::Item {
-    ///         self.load(Ordering::Relaxed)
-    ///     }
-    ///
-    ///     fn update(&self, value: Self::Item) -> Self::Item {
-    ///         self.swap(value, Ordering::Relaxed)
-    ///     }
-    /// }
-    /// ````
+    /// let value = AtomicU8::new(7);
+    /// assert_eq!(value.get(), 7);
+    /// ```
     fn get(&self) -> Self::Item;
 }
 
@@ -99,7 +82,7 @@ impl<T> AtomicOption<T> {
     /// # Example
     ///
     /// ```no_run
-    /// use sync::atomic::AtomicOption;
+    /// use nayutacast_common::atomic::AtomicOption;
     ///
     /// let opt = AtomicOption::<u8>::new(None);
     /// assert_eq!(opt.get().is_none(), true);
@@ -124,7 +107,7 @@ impl<T> AtomicOption<T> {
     /// # Example
     ///
     /// ```no_run
-    /// use sync::atomic::AtomicOption;
+    /// use nayutacast_common::atomic::AtomicOption;
     ///
     /// let opt = AtomicOption::<u8>::new(None);
     /// assert_eq!(opt.get().is_none(), true);
@@ -155,7 +138,7 @@ impl<T> AtomicOption<T> {
     /// # Example
     ///
     /// ```no_run
-    /// use sync::atomic::AtomicOption;
+    /// use nayutacast_common::atomic::AtomicOption;
     ///
     /// let opt = AtomicOption::<u8>::new(None);
     /// assert_eq!(opt.get().is_none(), true);
@@ -175,7 +158,7 @@ impl<T> AtomicOption<T> {
     /// # Example
     ///
     /// ```no_run
-    /// use sync::atomic::AtomicOption;
+    /// use nayutacast_common::atomic::AtomicOption;
     ///
     /// let opt = AtomicOption::<u8>::new(None);
     /// assert_eq!(opt.get().is_none(), true);
