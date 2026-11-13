@@ -197,6 +197,7 @@ jobs:
               install_name_tool -change "$dep" "@rpath/${base}" "${APP_DIR}/Contents/MacOS/Nayutacast" || true
             fi
           done
+          codesign --force --deep --sign - "${APP_DIR}" || true
 
           tar -czvf release-assets/nayutacast-macos-arm64.tar.gz -C dist-macos .
 
