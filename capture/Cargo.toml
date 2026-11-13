@@ -35,6 +35,9 @@ cpal = "0.15"
 nix = { version = "0.29", features = ["mman", "ioctl", "fs"] }
 memmap2 = "0.9"
 libc = "0.2"
+serde_json = "1.0"
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 x11rb = { version = "0.13", features = ["shm", "randr"] }
 zbus = { version = "5", features = ["tokio", "blocking-api"] }
 

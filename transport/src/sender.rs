@@ -2,7 +2,10 @@ use std::{
     collections::HashMap,
     io::Error,
     net::{IpAddr, SocketAddr},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     thread,
 };
 
@@ -18,6 +21,7 @@ use crate::{
 pub struct Sender {
     id: String,
     adapter: Arc<StreamSenderAdapter>,
+    client_count: Arc<AtomicUsize>,
 }
 
 impl Default for Sender {
@@ -25,6 +29,7 @@ impl Default for Sender {
         Self {
             id: Uuid::new_v4().to_string(),
             adapter: Arc::new(StreamSenderAdapter::default()),
+            client_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -38,7 +43,12 @@ impl Sender {
         self.adapter.clone()
     }
 
+    pub fn client_count(&self) -> usize {
+        self.client_count.load(Ordering::Relaxed)
+    }
+
     pub fn close(&self) {
+        self.client_count.store(0, Ordering::Relaxed);
         self.adapter.close();
     }
 }
@@ -201,12 +211,15 @@ fn create_direct_sender(addr: SocketAddr, mtu: usize) -> Result<Sender, Error> {
     let id = sender.id.clone();
     let server_ = server.clone();
     let sockets_ = Arc::downgrade(&sockets);
+    let count_accept = sender.client_count.clone();
     thread::Builder::new()
         .name("NayutacastStreamDirectSrtServerThread".to_string())
         .spawn(move || {
             while let Ok((socket, addr)) = server_.accept() {
                 if let Some(sockets) = sockets_.upgrade() {
-                    sockets.write().insert(addr, socket);
+                    let mut guard = sockets.write();
+                    guard.insert(addr, socket);
+                    count_accept.store(guard.len(), Ordering::Relaxed);
 
                     log::info!("srt direct server accept a socket, addr={}", addr);
                 } else {
@@ -219,6 +232,7 @@ fn create_direct_sender(addr: SocketAddr, mtu: usize) -> Result<Sender, Error> {
 
     let id = sender.id.clone();
     let adapter_ = Arc::downgrade(&sender.adapter);
+    let count_send = sender.client_count.clone();
     thread::Builder::new()
         .name("NayutacastStreamDirectSenderThread".to_string())
         .spawn(move || {
@@ -260,9 +274,11 @@ fn create_direct_sender(addr: SocketAddr, mtu: usize) -> Result<Sender, Error> {
                         }
 
                         if !closed.is_empty() {
+                            let mut guard = sockets.write();
                             for addr in &closed {
-                                sockets.write().remove(addr);
+                                guard.remove(addr);
                             }
+                            count_send.store(guard.len(), Ordering::Relaxed);
 
                             closed.clear();
                         }
@@ -272,6 +288,7 @@ fn create_direct_sender(addr: SocketAddr, mtu: usize) -> Result<Sender, Error> {
                 }
             }
 
+            count_send.store(0, Ordering::Relaxed);
             log::info!("srt direct sender is closed, id={}, addr={}", id, addr);
 
             server.close();

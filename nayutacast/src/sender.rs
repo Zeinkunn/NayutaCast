@@ -465,6 +465,11 @@ where
         &self.description
     }
 
+    /// Returns the number of currently connected remote receivers.
+    pub fn client_count(&self) -> usize {
+        self.transport.client_count()
+    }
+
     /// Resize the video renderer.
     pub fn resize(&self, size: Size) {
         self.sink.resize(size);

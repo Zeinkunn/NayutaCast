@@ -1,11 +1,11 @@
 use crate::{
     CaptureHandler, FrameConsumer, Source, SourceType, VideoCaptureSourceDescription,
-    linux::x11_screen::bgra_to_nv12,
 };
 
 use std::{
     collections::HashMap,
     ffi::c_void,
+    os::fd::OwnedFd,
     ptr::null,
     sync::{
         Arc, Mutex,
@@ -21,8 +21,14 @@ use pw::spa::{self, pod::Pod};
 use thiserror::Error;
 use zbus::{
     blocking::{Connection, Proxy},
-    zvariant::{OwnedObjectPath, Value},
+    zvariant::{OwnedFd as ZbusOwnedFd, OwnedObjectPath, OwnedValue, Value},
 };
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PixelOrder {
+    Bgrx,
+    Rgbx,
+}
 
 #[derive(Debug, Error)]
 #[allow(dead_code)]
@@ -166,45 +172,118 @@ fn run_pipewire_capture<S: FrameConsumer<Frame = VideoFrame>>(
     monitor_output: Option<String>,
     mut consumer: S,
 ) -> Result<(), ScreenCaptureError> {
-    pw::init();
-    log::info!("Attempting Wayland screen capture via Portal: {}x{} @ {}fps", width, height, fps);
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        log::info!(
+            "Attempting Wayland wlr-screencopy capture ({:?}) -> {}x{} @ {}fps",
+            monitor_output,
+            width,
+            height,
+            fps
+        );
+        match super::wlr_screencopy::run_wlr_screencopy(
+            &running,
+            width,
+            height,
+            fps,
+            monitor_output.as_deref(),
+            &mut consumer,
+        ) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                if !running.load(Ordering::SeqCst) {
+                    return Ok(());
+                }
+                log::warn!(
+                    "wlr-screencopy unavailable ({}); falling back to XDG Portal + PipeWire",
+                    e
+                );
+            }
+        }
+    }
 
-    // Try negotiating screencast with XDG Desktop Portal
-    let portal_target = match start_portal_screencast(&running) {
-        Ok(target_id) => {
-            log::info!("XDG Desktop Portal Screencast granted. PipeWire node target: {}", target_id);
-            Some(target_id)
+    pw::init();
+    log::info!(
+        "Attempting Wayland screen capture via Portal: {}x{} @ {}fps",
+        width,
+        height,
+        fps
+    );
+
+    // Keep portal session connection alive for the lifetime of the PipeWire stream.
+    let portal = match start_portal_screencast(&running) {
+        Ok(session) => {
+            log::info!(
+                "XDG Desktop Portal Screencast granted. PipeWire node target: {}",
+                session.node_id
+            );
+            Some(session)
         }
         Err(e) => {
-            log::warn!("Portal screencast unavailable: {}. Using fallback screen pipeline.", e);
+            log::warn!(
+                "Portal screencast unavailable: {}. Using grim fallback screen pipeline.",
+                e
+            );
             None
         }
     };
 
-    if let Some(target) = portal_target {
-        if let Ok(res) = run_pipewire_stream(running.clone(), target, width, height, &mut consumer) {
-            return Ok(res);
+    if let Some(session) = portal {
+        if let Err(e) = run_pipewire_stream(
+            running.clone(),
+            session.node_id,
+            session.pw_fd,
+            width,
+            height,
+            fps,
+            &mut consumer,
+        ) {
+            log::warn!("PipeWire portal stream ended/failed ({}); trying fallback", e);
+        } else {
+            drop(session._conn);
+            return Ok(());
         }
-        log::warn!("PipeWire stream ended or failed, running active fallback stream");
     }
 
-    // Active fallback stream: generates real desktop frames via grim or smooth animated pattern
+    if !running.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+
+    // Active fallback stream: captures via grim on Wayland or synthetic test pattern
     run_fallback_loop(running, width, height, fps, monitor_output, consumer)
+}
+
+struct PortalScreencastSession {
+    _conn: Connection,
+    node_id: u32,
+    pw_fd: Option<OwnedFd>,
+}
+
+struct PipeWireStreamData {
+    format: spa::param::video::VideoInfoRaw,
+    order: PixelOrder,
+    width: u32,
+    height: u32,
+    has_format: bool,
 }
 
 fn run_pipewire_stream<S: FrameConsumer<Frame = VideoFrame>>(
     running: Arc<AtomicBool>,
     target_node: u32,
+    pw_fd: Option<OwnedFd>,
     target_width: u32,
     target_height: u32,
+    fps: u8,
     consumer: &mut S,
 ) -> Result<(), ScreenCaptureError> {
     let mainloop = pw::main_loop::MainLoopRc::new(None)
         .map_err(|e| ScreenCaptureError::PipeWireInit(e.to_string()))?;
     let context = pw::context::ContextRc::new(&mainloop, None)
         .map_err(|e| ScreenCaptureError::PipeWireInit(e.to_string()))?;
-    let core = context.connect_rc(None)
-        .map_err(|e| ScreenCaptureError::PipeWireInit(e.to_string()))?;
+    let core = match pw_fd {
+        Some(fd) => context.connect_fd_rc(fd, None),
+        None => context.connect_rc(None),
+    }
+    .map_err(|e| ScreenCaptureError::PipeWireInit(e.to_string()))?;
 
     let stream = pw::stream::StreamBox::new(
         &core,
@@ -219,23 +298,68 @@ fn run_pipewire_stream<S: FrameConsumer<Frame = VideoFrame>>(
 
     let y_size = (target_width * target_height) as usize;
     let uv_size = (target_width * (target_height / 2)) as usize;
-    let y_plane = Arc::new(Mutex::new(vec![0u8; y_size]));
-    let uv_plane = Arc::new(Mutex::new(vec![128u8; uv_size]));
+    let shared_planes = Arc::new(Mutex::new((vec![16u8; y_size], vec![128u8; uv_size], 0u64)));
+    let planes_for_cb = shared_planes.clone();
 
     let stream_running = running.clone();
     let err_flag = Arc::new(AtomicBool::new(false));
     let err_clone = err_flag.clone();
     let ml = mainloop.clone();
 
+    let stream_data = PipeWireStreamData {
+        format: Default::default(),
+        order: PixelOrder::Bgrx,
+        width: target_width,
+        height: target_height,
+        has_format: false,
+    };
+
     let _listener = stream
-        .add_local_listener::<()>()
+        .add_local_listener_with_user_data(stream_data)
         .state_changed(move |_, _, old, new| {
             log::info!("PipeWire stream state: {:?} -> {:?}", old, new);
             if matches!(new, pw::stream::StreamState::Error(_)) {
                 err_clone.store(true, Ordering::SeqCst);
             }
         })
-        .process(move |stream, _| {
+        .param_changed(move |_, user_data, id, param| {
+            let Some(param) = param else {
+                return;
+            };
+            if id != pw::spa::param::ParamType::Format.as_raw() {
+                return;
+            }
+            let Ok((media_type, media_subtype)) =
+                pw::spa::param::format_utils::parse_format(param)
+            else {
+                return;
+            };
+            if media_type != pw::spa::param::format::MediaType::Video
+                || media_subtype != pw::spa::param::format::MediaSubtype::Raw
+            {
+                return;
+            }
+            if user_data.format.parse(param).is_ok() {
+                let sz = user_data.format.size();
+                if sz.width > 0 && sz.height > 0 {
+                    user_data.width = sz.width;
+                    user_data.height = sz.height;
+                    user_data.has_format = true;
+                }
+                user_data.order = match user_data.format.format() {
+                    pw::spa::param::video::VideoFormat::RGBA
+                    | pw::spa::param::video::VideoFormat::RGBx => PixelOrder::Rgbx,
+                    _ => PixelOrder::Bgrx,
+                };
+                log::info!(
+                    "PipeWire negotiated format {:?} ({}x{})",
+                    user_data.format.format(),
+                    user_data.width,
+                    user_data.height
+                );
+            }
+        })
+        .process(move |stream, user_data| {
             if !stream_running.load(Ordering::SeqCst) {
                 ml.quit();
                 return;
@@ -243,24 +367,41 @@ fn run_pipewire_stream<S: FrameConsumer<Frame = VideoFrame>>(
 
             if let Some(mut buffer) = stream.dequeue_buffer() {
                 let datas = buffer.datas_mut();
-                if !datas.is_empty() {
-                    let chunk_size = datas[0].chunk().size() as usize;
-                    if let Some(slice) = datas[0].data() {
-                        if chunk_size > 0 && chunk_size <= slice.len() {
-                            let frame_data = &slice[..chunk_size];
-                            let mut y_lock = y_plane.lock().unwrap();
-                            let mut uv_lock = uv_plane.lock().unwrap();
-                            bgra_to_nv12(
-                                frame_data,
-                                1920,
-                                1080,
-                                target_width as usize,
-                                target_height as usize,
-                                &mut y_lock,
-                                &mut uv_lock,
-                            );
-                        }
-                    }
+                if datas.is_empty() || !user_data.has_format {
+                    return;
+                }
+                let chunk = datas[0].chunk();
+                let chunk_offset = chunk.offset() as usize;
+                let chunk_size = chunk.size() as usize;
+                let chunk_stride = chunk.stride().max(0) as usize;
+                let src_w = user_data.width.max(1) as usize;
+                let src_h = user_data.height.max(1) as usize;
+                let stride = if chunk_stride >= src_w * 4 {
+                    chunk_stride
+                } else {
+                    src_w * 4
+                };
+
+                if let Some(slice) = datas[0].data()
+                    && chunk_size > 0
+                    && chunk_offset.saturating_add(chunk_size) <= slice.len()
+                {
+                    let frame_data = &slice[chunk_offset..chunk_offset + chunk_size];
+                    let mut guard = planes_for_cb.lock().unwrap();
+                    let (y_lock, uv_lock, seq) = &mut *guard;
+                    packed_4byte_to_nv12(
+                        frame_data,
+                        src_w,
+                        src_h,
+                        stride,
+                        user_data.order,
+                        false,
+                        target_width as usize,
+                        target_height as usize,
+                        y_lock,
+                        uv_lock,
+                    );
+                    *seq = seq.wrapping_add(1);
                 }
             }
         })
@@ -287,8 +428,42 @@ fn run_pipewire_stream<S: FrameConsumer<Frame = VideoFrame>>(
             Id,
             pw::spa::param::video::VideoFormat::BGRx,
             pw::spa::param::video::VideoFormat::BGRx,
+            pw::spa::param::video::VideoFormat::BGRA,
             pw::spa::param::video::VideoFormat::RGBA,
             pw::spa::param::video::VideoFormat::RGBx,
+        ),
+        pw::spa::pod::property!(
+            pw::spa::param::format::FormatProperties::VideoSize,
+            Choice,
+            Range,
+            Rectangle,
+            pw::spa::utils::Rectangle {
+                width: target_width,
+                height: target_height
+            },
+            pw::spa::utils::Rectangle {
+                width: 1,
+                height: 1
+            },
+            pw::spa::utils::Rectangle {
+                width: 7680,
+                height: 4320
+            }
+        ),
+        pw::spa::pod::property!(
+            pw::spa::param::format::FormatProperties::VideoFramerate,
+            Choice,
+            Range,
+            Fraction,
+            pw::spa::utils::Fraction {
+                num: fps as u32,
+                denom: 1
+            },
+            pw::spa::utils::Fraction { num: 0, denom: 1 },
+            pw::spa::utils::Fraction {
+                num: 120,
+                denom: 1
+            }
         ),
     );
 
@@ -302,17 +477,24 @@ fn run_pipewire_stream<S: FrameConsumer<Frame = VideoFrame>>(
 
     let mut params = [Pod::from_bytes(&values).unwrap()];
 
-    let target = if target_node == 0 { None } else { Some(target_node) };
-    stream.connect(
-        spa::utils::Direction::Input,
-        target,
-        pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS,
-        &mut params,
-    ).map_err(|e| ScreenCaptureError::StreamStart(e.to_string()))?;
+    let target = if target_node == 0 {
+        None
+    } else {
+        Some(target_node)
+    };
+    stream
+        .connect(
+            spa::utils::Direction::Input,
+            target,
+            pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS,
+            &mut params,
+        )
+        .map_err(|e| ScreenCaptureError::StreamStart(e.to_string()))?;
 
-    let y_buf = vec![0u8; y_size];
-    let uv_buf = vec![128u8; uv_size];
-    let frame = VideoFrame {
+    let mut y_buf = vec![16u8; y_size];
+    let mut uv_buf = vec![128u8; uv_size];
+    let mut last_seq = 0u64;
+    let mut frame = VideoFrame {
         format: VideoFormat::NV12,
         sub_format: VideoSubFormat::SW,
         width: target_width,
@@ -325,20 +507,86 @@ fn run_pipewire_stream<S: FrameConsumer<Frame = VideoFrame>>(
         linesize: [target_width, target_width, 0],
     };
 
+    let frame_wait_ms = (1000 / fps.max(1) as u64).clamp(8, 33);
     while running.load(Ordering::SeqCst) {
         if err_flag.load(Ordering::SeqCst) {
-            return Err(ScreenCaptureError::StreamStart("PipeWire stream error".into()));
+            return Err(ScreenCaptureError::StreamStart(
+                "PipeWire stream error".into(),
+            ));
         }
-        mainloop.loop_().iterate(pw::loop_::Timeout::Finite(Duration::from_millis(16)));
-        if !consumer.sink(&frame) {
-            break;
+        mainloop
+            .loop_()
+            .iterate(pw::loop_::Timeout::Finite(Duration::from_millis(frame_wait_ms)));
+
+        let updated = {
+            let guard = shared_planes.lock().unwrap();
+            if guard.2 != last_seq {
+                y_buf.copy_from_slice(&guard.0);
+                uv_buf.copy_from_slice(&guard.1);
+                last_seq = guard.2;
+                true
+            } else {
+                false
+            }
+        };
+
+        if updated {
+            frame.data[0] = y_buf.as_ptr() as *const c_void;
+            frame.data[1] = uv_buf.as_ptr() as *const c_void;
+            if !consumer.sink(&frame) {
+                break;
+            }
         }
     }
 
     Ok(())
 }
 
-fn start_portal_screencast(_running: &AtomicBool) -> Result<u32, ScreenCaptureError> {
+fn portal_request_signal(
+    conn: &Connection,
+    handle_token: &str,
+) -> Result<zbus::blocking::proxy::SignalIterator<'static>, ScreenCaptureError> {
+    let sender = conn
+        .unique_name()
+        .ok_or_else(|| ScreenCaptureError::PortalError("Missing D-Bus unique name".into()))?;
+    let sanitized = sender.as_str().trim_start_matches(':').replace('.', "_");
+    let expected_path = format!(
+        "/org/freedesktop/portal/desktop/request/{}/{}",
+        sanitized, handle_token
+    );
+    let req_proxy = Proxy::new(
+        conn,
+        "org.freedesktop.portal.Desktop",
+        expected_path,
+        "org.freedesktop.portal.Request",
+    )
+    .map_err(|e| ScreenCaptureError::PortalError(format!("Request proxy failed: {}", e)))?;
+
+    req_proxy
+        .receive_signal("Response")
+        .map_err(|e| ScreenCaptureError::PortalError(format!("Signal subscribe failed: {}", e)))
+}
+
+fn wait_portal_response(
+    signals: &mut zbus::blocking::proxy::SignalIterator<'_>,
+) -> Result<HashMap<String, OwnedValue>, ScreenCaptureError> {
+    let msg = signals
+        .next()
+        .ok_or_else(|| ScreenCaptureError::PortalError("Portal response channel closed".into()))?;
+    let (code, results): (u32, HashMap<String, OwnedValue>) = msg
+        .body()
+        .deserialize()
+        .map_err(|e| ScreenCaptureError::PortalError(format!("Portal response decode: {}", e)))?;
+    if code != 0 {
+        return Err(ScreenCaptureError::PortalError(format!(
+            "Portal request cancelled/failed (code {})",
+            code
+        )));
+    }
+    Ok(results)
+}
+
+fn start_portal_screencast(running: &AtomicBool) -> Result<PortalScreencastSession, ScreenCaptureError> {
     let conn = Connection::session()
         .map_err(|e| ScreenCaptureError::PortalError(format!("D-Bus connect failed: {}", e)))?;
 
@@ -350,19 +598,81 @@ fn start_portal_screencast(_running: &AtomicBool) -> Result<u32, ScreenCaptureEr
     )
     .map_err(|e| ScreenCaptureError::PortalError(format!("Portal proxy error: {}", e)))?;
 
-    let session_token = format!("nayuta_{}", std::process::id());
-    let mut options: HashMap<&str, Value> = HashMap::new();
-    options.insert("session_handle_token", Value::from(session_token.as_str()));
-    options.insert("handle_token", Value::from(session_token.as_str()));
+    let pid = std::process::id();
+    let create_token = format!("nayuta_create_{}", pid);
+    let mut create_sig = portal_request_signal(&conn, &create_token)?;
 
-    let request_path: OwnedObjectPath = proxy
-        .call("CreateSession", &(options,))
+    let mut create_opts: HashMap<&str, Value> = HashMap::new();
+    create_opts.insert("session_handle_token", Value::from(format!("nayuta_sess_{}", pid)));
+    create_opts.insert("handle_token", Value::from(create_token.as_str()));
+
+    let _req_path: OwnedObjectPath = proxy
+        .call("CreateSession", &(create_opts,))
         .map_err(|e| ScreenCaptureError::PortalError(format!("CreateSession error: {}", e)))?;
 
-    log::info!("Portal session request created: {:?}", request_path);
+    let create_res = wait_portal_response(&mut create_sig)?;
+    let session_handle_str: String = create_res
+        .get("session_handle")
+        .and_then(|v| v.downcast_ref::<zbus::zvariant::Str>().ok().map(|s| s.to_string()))
+        .ok_or_else(|| ScreenCaptureError::PortalError("Missing session_handle".into()))?;
+    let session_obj = OwnedObjectPath::try_from(session_handle_str)
+        .map_err(|e| ScreenCaptureError::PortalError(format!("Invalid session path: {}", e)))?;
 
-    // In desktop portal, default target node on single monitor is 0 or node retrieved from pipewire
-    Ok(0)
+    if !running.load(Ordering::SeqCst) {
+        return Err(ScreenCaptureError::PortalError("Stopped".into()));
+    }
+
+    let select_token = format!("nayuta_select_{}", pid);
+    let mut select_sig = portal_request_signal(&conn, &select_token)?;
+    let mut select_opts: HashMap<&str, Value> = HashMap::new();
+    select_opts.insert("handle_token", Value::from(select_token.as_str()));
+    select_opts.insert("types", Value::from(1u32)); // MONITOR = 1
+    select_opts.insert("multiple", Value::from(false));
+    select_opts.insert("cursor_mode", Value::from(2u32)); // Embedded = 2
+    select_opts.insert("persist_mode", Value::from(2u32)); // Persist until revoked
+
+    let _sel_req: OwnedObjectPath = proxy
+        .call("SelectSources", &(&session_obj, select_opts))
+        .map_err(|e| ScreenCaptureError::PortalError(format!("SelectSources error: {}", e)))?;
+    let _ = wait_portal_response(&mut select_sig)?;
+
+    if !running.load(Ordering::SeqCst) {
+        return Err(ScreenCaptureError::PortalError("Stopped".into()));
+    }
+
+    let start_token = format!("nayuta_start_{}", pid);
+    let mut start_sig = portal_request_signal(&conn, &start_token)?;
+    let mut start_opts: HashMap<&str, Value> = HashMap::new();
+    start_opts.insert("handle_token", Value::from(start_token.as_str()));
+
+    let _start_req: OwnedObjectPath = proxy
+        .call("Start", &(&session_obj, "", start_opts))
+        .map_err(|e| ScreenCaptureError::PortalError(format!("Portal Start error: {}", e)))?;
+    let start_res = wait_portal_response(&mut start_sig)?;
+
+    let streams_val = start_res
+        .get("streams")
+        .ok_or_else(|| ScreenCaptureError::PortalError("Portal Start returned no streams".into()))?;
+    let streams: Vec<(u32, HashMap<String, OwnedValue>)> = streams_val
+        .clone()
+        .try_into()
+        .map_err(|e| ScreenCaptureError::PortalError(format!("Parse streams error: {:?}", e)))?;
+    let node_id = streams
+        .first()
+        .map(|(id, _)| *id)
+        .ok_or_else(|| ScreenCaptureError::PortalError("Empty portal stream list".into()))?;
+
+    let empty_opts: HashMap<&str, Value> = HashMap::new();
+    let pw_zbus_fd: ZbusOwnedFd = proxy
+        .call("OpenPipeWireRemote", &(&session_obj, empty_opts))
+        .map_err(|e| ScreenCaptureError::PortalError(format!("OpenPipeWireRemote error: {}", e)))?;
+    let pw_fd: OwnedFd = pw_zbus_fd.into();
+
+    Ok(PortalScreencastSession {
+        _conn: conn,
+        node_id,
+        pw_fd: Some(pw_fd),
+    })
 }
 
 fn run_fallback_loop<S: FrameConsumer<Frame = VideoFrame>>(
@@ -493,6 +803,71 @@ fn capture_grim_frame(output_name: Option<&str>) -> Option<(Vec<u8>, usize, usiz
     Some((rgb, w, h))
 }
 
+#[inline]
+fn rgb_to_y(r: i32, g: i32, b: i32) -> u8 {
+    (((19595 * r + 38470 * g + 7471 * b + 32768) >> 16).clamp(0, 255)) as u8
+}
+
+#[inline]
+fn rgb_to_uv(r: i32, g: i32, b: i32) -> (u8, u8) {
+    let u = ((((-11059 * r - 21709 * g + 32768 * b + 32768) >> 16) + 128).clamp(0, 255)) as u8;
+    let v = ((((32768 * r - 27439 * g - 5329 * b + 32768) >> 16) + 128).clamp(0, 255)) as u8;
+    (u, v)
+}
+
+/// Converts packed 32-bit BGRX/BGRA/RGBX/RGBA buffers (arbitrary stride & optional Y-invert) into NV12.
+#[allow(clippy::too_many_arguments)]
+pub fn packed_4byte_to_nv12(
+    src: &[u8],
+    src_w: usize,
+    src_h: usize,
+    src_stride: usize,
+    order: PixelOrder,
+    y_invert: bool,
+    dst_w: usize,
+    dst_h: usize,
+    dst_y: &mut [u8],
+    dst_uv: &mut [u8],
+) {
+    if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
+        return;
+    }
+    let stride = src_stride.max(src_w * 4);
+    let x_ratio = (src_w << 16) / dst_w;
+    let y_ratio = (src_h << 16) / dst_h;
+
+    for dy in 0..dst_h {
+        let sy_raw = ((dy * y_ratio) >> 16).min(src_h - 1);
+        let sy = if y_invert { src_h - 1 - sy_raw } else { sy_raw };
+        let src_row = sy * stride;
+        let dst_row = dy * dst_w;
+        if dst_row + dst_w > dst_y.len() {
+            break;
+        }
+
+        for dx in 0..dst_w {
+            let sx = ((dx * x_ratio) >> 16).min(src_w - 1);
+            let px = src_row + sx * 4;
+            if px + 3 >= src.len() {
+                continue;
+            }
+            let (r, g, b) = match order {
+                PixelOrder::Bgrx => (src[px + 2] as i32, src[px + 1] as i32, src[px] as i32),
+                PixelOrder::Rgbx => (src[px] as i32, src[px + 1] as i32, src[px + 2] as i32),
+            };
+            dst_y[dst_row + dx] = rgb_to_y(r, g, b);
+            if (dy & 1 == 0) && (dx & 1 == 0) {
+                let uv_idx = (dy >> 1) * dst_w + dx;
+                if uv_idx + 1 < dst_uv.len() {
+                    let (u, v) = rgb_to_uv(r, g, b);
+                    dst_uv[uv_idx] = u;
+                    dst_uv[uv_idx + 1] = v;
+                }
+            }
+        }
+    }
+}
+
 pub fn rgb_to_nv12(
     src_rgb: &[u8],
     src_w: usize,
@@ -519,15 +894,13 @@ pub fn rgb_to_nv12(
                 let g = src_rgb[px + 1] as i32;
                 let b = src_rgb[px + 2] as i32;
 
-                let y = ((19595 * r + 38470 * g + 7471 * b + 32768) >> 16) as u8;
-                dst_y[dst_row + dx] = y;
+                dst_y[dst_row + dx] = rgb_to_y(r, g, b);
 
                 if (dy & 1 == 0) && (dx & 1 == 0) {
                     let uv_row = (dy >> 1) * dst_w;
                     let uv_idx = uv_row + dx;
-                    let u = (((-11059 * r - 21709 * g + 32768 * b + 32768) >> 16) + 128) as u8;
-                    let v = (((32768 * r - 27439 * g - 5329 * b + 32768) >> 16) + 128) as u8;
                     if uv_idx + 1 < dst_uv.len() {
+                        let (u, v) = rgb_to_uv(r, g, b);
                         dst_uv[uv_idx] = u;
                         dst_uv[uv_idx + 1] = v;
                     }

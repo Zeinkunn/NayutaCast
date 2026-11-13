@@ -16,7 +16,6 @@ use common::{
 use ffmpeg::*;
 use thiserror::Error;
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
 use common::Size;
 
 #[cfg(target_os = "macos")]
@@ -78,7 +77,7 @@ impl VideoDecoder {
         )?;
 
         #[cfg(target_os = "linux")]
-        let codec = create_video_context(&mut this.context, CodecType::from(options.codec))?;
+        let codec = create_video_context(&mut this.context, CodecType::from(options.codec), None)?;
 
         #[cfg(target_os = "macos")]
         let codec = create_video_context(&mut this.context, CodecType::from(options.codec), None)?;
@@ -305,6 +304,7 @@ pub struct VideoEncoder {
     context: *mut AVCodecContext,
     packet: *mut AVPacket,
     frame: *mut AVFrame,
+    sw_frame: *mut AVFrame,
     initialized: bool,
 }
 
@@ -313,6 +313,24 @@ unsafe impl Send for VideoEncoder {}
 
 impl VideoEncoder {
     pub fn new(options: VideoEncoderSettings) -> Result<Self, VideoEncoderError> {
+        let fallback_options = options.clone();
+        match Self::open_internal(options) {
+            Ok(enc) => Ok(enc),
+            #[cfg(target_os = "linux")]
+            Err(err) if fallback_options.codec == VideoEncoderType::Vaapi => {
+                log::warn!(
+                    "VAAPI encoder init failed ({}); falling back to libx264 software encoder",
+                    err
+                );
+                let mut sw_opts = fallback_options;
+                sw_opts.codec = VideoEncoderType::X264;
+                Self::open_internal(sw_opts)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    fn open_internal(options: VideoEncoderSettings) -> Result<Self, VideoEncoderError> {
         if !CodecType::from(options.codec).is_supported() {
             return Err(VideoEncoderError::CodecError(CodecError::NotSupportCodec));
         }
@@ -321,6 +339,7 @@ impl VideoEncoder {
             context: null_mut(),
             packet: null_mut(),
             frame: null_mut(),
+            sw_frame: null_mut(),
             initialized: false,
         };
 
@@ -335,10 +354,7 @@ impl VideoEncoder {
             options.direct3d,
         )?;
 
-        #[cfg(target_os = "linux")]
-        let codec = create_video_context(&mut this.context, CodecType::from(options.codec))?;
-
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let codec = create_video_context(
             &mut this.context,
             CodecType::from(options.codec),
@@ -367,6 +383,8 @@ impl VideoEncoder {
             context_mut.thread_type = FF_THREAD_SLICE as i32;
             context_mut.pix_fmt = if options.codec == VideoEncoderType::VideoToolBox {
                 AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX
+            } else if cfg!(target_os = "linux") && options.codec == VideoEncoderType::Vaapi {
+                AVPixelFormat::AV_PIX_FMT_VAAPI
             } else {
                 AVPixelFormat::AV_PIX_FMT_NV12
             };
@@ -432,6 +450,26 @@ impl VideoEncoder {
         // then reused by replacing the data inside the frame.
         create_video_frame(&mut this.frame, this.context)?;
 
+        if context_mut.pix_fmt == AVPixelFormat::AV_PIX_FMT_VAAPI {
+            this.sw_frame = unsafe { av_frame_alloc() };
+            if this.sw_frame.is_null() {
+                return Err(VideoEncoderError::CreateVideoFrameError(
+                    CreateVideoFrameError::AllocAVFrameError,
+                ));
+            }
+            unsafe {
+                let sw = &mut *this.sw_frame;
+                sw.width = context_mut.width;
+                sw.height = context_mut.height;
+                sw.format = AVPixelFormat::AV_PIX_FMT_NV12 as i32;
+                if av_frame_get_buffer(this.sw_frame, 0) != 0 {
+                    return Err(VideoEncoderError::CreateVideoFrameError(
+                        CreateVideoFrameError::AllocAVFrameBufferError,
+                    ));
+                }
+            }
+        }
+
         Ok(this)
     }
 
@@ -465,29 +503,72 @@ impl VideoEncoder {
                 av_frame.data[3] = frame.data[0] as _;
             }
             VideoSubFormat::SW => {
-                // Anyway, the hardware encoder has no way to check whether the current frame is
-                // writable.
-                if unsafe { av_frame_make_writable(self.frame) } != 0 {
-                    return false;
-                }
+                let ctx_pix_fmt = unsafe { (*self.context).pix_fmt };
+                if ctx_pix_fmt == AVPixelFormat::AV_PIX_FMT_VAAPI {
+                    if self.sw_frame.is_null() {
+                        return false;
+                    }
+                    if unsafe { av_frame_make_writable(self.sw_frame) } != 0 {
+                        return false;
+                    }
+                    let sw = unsafe { &mut *self.sw_frame };
+                    unsafe {
+                        av_image_copy(
+                            sw.data.as_mut_ptr(),
+                            sw.linesize.as_mut_ptr(),
+                            frame.data.as_ptr() as _,
+                            [
+                                frame.linesize[0] as i32,
+                                frame.linesize[1] as i32,
+                                frame.linesize[2] as i32,
+                            ]
+                            .as_ptr(),
+                            AVPixelFormat::AV_PIX_FMT_NV12,
+                            sw.width,
+                            sw.height,
+                        );
+                    }
+                    unsafe {
+                        av_frame_unref(self.frame);
+                        if av_hwframe_get_buffer(
+                            (*self.context).hw_frames_ctx,
+                            self.frame,
+                            0,
+                        ) != 0
+                        {
+                            return false;
+                        }
+                        if av_hwframe_transfer_data(self.frame, self.sw_frame, 0) != 0 {
+                            return false;
+                        }
+                        (*self.frame).width = sw.width;
+                        (*self.frame).height = sw.height;
+                    }
+                } else {
+                    // Anyway, the hardware encoder has no way to check whether the current frame is
+                    // writable.
+                    if unsafe { av_frame_make_writable(self.frame) } != 0 {
+                        return false;
+                    }
 
-                // Directly replacing the pointer may cause some problems with pointer access.
-                // Copying data to the frame is the safest way.
-                unsafe {
-                    av_image_copy(
-                        av_frame.data.as_mut_ptr(),
-                        av_frame.linesize.as_mut_ptr(),
-                        frame.data.as_ptr() as _,
-                        [
-                            frame.linesize[0] as i32,
-                            frame.linesize[1] as i32,
-                            frame.linesize[2] as i32,
-                        ]
-                        .as_ptr(),
-                        { &*self.context }.pix_fmt,
-                        av_frame.width,
-                        av_frame.height,
-                    );
+                    // Directly replacing the pointer may cause some problems with pointer access.
+                    // Copying data to the frame is the safest way.
+                    unsafe {
+                        av_image_copy(
+                            av_frame.data.as_mut_ptr(),
+                            av_frame.linesize.as_mut_ptr(),
+                            frame.data.as_ptr() as _,
+                            [
+                                frame.linesize[0] as i32,
+                                frame.linesize[1] as i32,
+                                frame.linesize[2] as i32,
+                            ]
+                            .as_ptr(),
+                            ctx_pix_fmt,
+                            av_frame.width,
+                            av_frame.height,
+                        );
+                    }
                 }
             }
             #[allow(unreachable_patterns)]
@@ -573,6 +654,12 @@ impl Drop for VideoEncoder {
 
             unsafe {
                 avcodec_free_context(&mut self.context);
+            }
+        }
+
+        if !self.sw_frame.is_null() {
+            unsafe {
+                av_frame_free(&mut self.sw_frame);
             }
         }
 

@@ -1,110 +1,38 @@
+mod app;
 mod config;
-mod events;
-mod windows;
+mod sdk;
+mod theme;
+mod views;
 
-#[cfg(target_os = "macos")]
-mod patch;
+use app::NayutaCastApp;
+use eframe::NativeOptions;
 
-use std::sync::{Arc, LazyLock};
+fn main() -> eframe::Result<()> {
+    env_logger::init();
 
-use anyhow::Result;
-use common::logger;
-use events::MainEvents;
-use winit::{
-    application::ApplicationHandler,
-    event::WindowEvent,
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-};
-
-use self::{
-    config::AppConfig,
-    events::{EventChannel, EventTarget, Events},
-    windows::WindowManager,
-};
-
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
-
-static APP_CONFIG: LazyLock<AppConfig> = LazyLock::new(|| AppConfig::default());
-
-struct App {
-    initialized: bool,
-    window_manager: WindowManager,
-    events: Arc<EventChannel>,
-}
-
-impl ApplicationHandler<(EventTarget, Events)> for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if !self.initialized {
-            self.initialized = true;
-
-            self.window_manager.create(event_loop).unwrap();
-        }
+    // Initialize Nayutacast SDK (FFmpeg codecs, transport runtime)
+    if let Err(e) = nayutacast::startup() {
+        log::warn!("Nayutacast SDK startup notice: {:?}", e);
     }
 
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        id: winit::window::WindowId,
-        event: WindowEvent,
-    ) {
-        self.window_manager.window_event(event_loop, id, event);
-    }
+    let native_options = NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("NayutaCast")
+            .with_inner_size([960.0, 680.0])
+            .with_min_inner_size([800.0, 560.0])
+            .with_decorations(false)
+            .with_transparent(false),
+        ..Default::default()
+    };
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, (target, event): (EventTarget, Events)) {
-        match event {
-            Events::UserEvents(event) => {
-                if let Err(e) = self.window_manager.user_event(target, event) {
-                    log::error!("Unable to process user event, error={:?}", e);
-                }
-            }
-            Events::InnerEvent(event) => {
-                self.events.inner_event(event);
-            }
-            Events::MainEvents(event) => match event {
-                MainEvents::Shutdown => {
-                    event_loop.exit();
-                }
-            },
-        }
-    }
+    let result = eframe::run_native(
+        "NayutaCast",
+        native_options,
+        Box::new(|cc| Ok(Box::new(NayutaCastApp::new(cc)))),
+    );
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        self.window_manager.about_to_wait();
-    }
-}
+    // Clean up Nayutacast SDK on exit
+    let _ = nayutacast::shutdown();
 
-impl App {
-    fn new(events: Arc<EventChannel>) -> Result<Self> {
-        Ok(Self {
-            window_manager: WindowManager::new(events.clone())?,
-            initialized: false,
-            events,
-        })
-    }
-}
-
-fn main() -> Result<()> {
-    logger::init_logger(
-        log::LevelFilter::Info,
-        Some(&format!("{}/logs/", &APP_CONFIG.cache_path)),
-    )?;
-
-    log::info!("app config = {:?}", *APP_CONFIG);
-
-    #[cfg(target_os = "macos")]
-    wew::utils::startup_nsapplication();
-
-    let event_loop = EventLoop::<(EventTarget, Events)>::with_user_event().build()?;
-    event_loop.set_control_flow(ControlFlow::Wait);
-
-    // fix cef send event handle for winit 0.29
-    #[cfg(target_os = "macos")]
-    unsafe {
-        patch::inject_send_event_in_winit();
-    }
-
-    let event_channel = EventChannel::new(event_loop.create_proxy());
-    event_loop.run_app(&mut App::new(event_channel)?)?;
-    Ok(())
+    result
 }

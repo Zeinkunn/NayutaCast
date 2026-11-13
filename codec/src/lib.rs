@@ -1,5 +1,6 @@
 mod audio;
 mod codec;
+pub mod muxer;
 mod video;
 
 pub use self::{
@@ -8,6 +9,7 @@ pub use self::{
         create_opus_identification_header,
     },
     codec::{CodecError, CodecType},
+    muxer::{LiveMuxerError, LiveMuxerOptions, MuxerOutput, UniversalLiveMuxer},
     video::{VideoDecoder, VideoDecoderError, VideoEncoder, VideoEncoderError},
 };
 

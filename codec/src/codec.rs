@@ -5,7 +5,7 @@ use common::{
 use ffmpeg::*;
 use thiserror::Error;
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(target_os = "linux")]
 use common::Size;
 
 #[cfg(target_os = "windows")]
@@ -238,6 +238,7 @@ pub fn create_video_context(
 pub fn create_video_context(
     context: &mut *mut AVCodecContext,
     kind: CodecType,
+    size: Option<Size>,
 ) -> Result<*const AVCodec, CreateVideoContextError> {
     let codec = unsafe { kind.find_av_codec() };
     if codec.is_null() {
@@ -247,6 +248,74 @@ pub fn create_video_context(
     *context = unsafe { avcodec_alloc_context3(codec) };
     if context.is_null() {
         return Err(CreateVideoContextError::AllocAVContextError);
+    }
+
+    if kind.is_hardware() {
+        let mut hw_device_ctx = std::ptr::null_mut();
+        let candidates = [Some("/dev/dri/renderD128"), Some("/dev/dri/renderD129"), None];
+        let mut opened = false;
+        for dev in candidates {
+            let dev_pstr = dev.map(PSTR::from);
+            let dev_ptr = dev_pstr.as_ref().map_or(std::ptr::null(), |p| p.as_ptr());
+            let rc = unsafe {
+                av_hwdevice_ctx_create(
+                    &mut hw_device_ctx,
+                    AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
+                    dev_ptr,
+                    std::ptr::null_mut(),
+                    0,
+                )
+            };
+            if rc == 0 && !hw_device_ctx.is_null() {
+                opened = true;
+                break;
+            }
+            if !hw_device_ctx.is_null() {
+                unsafe { av_buffer_unref(&mut hw_device_ctx) };
+            }
+        }
+
+        if !opened {
+            unsafe { avcodec_free_context(context) };
+            return Err(CreateVideoContextError::InitAVHardwareDeviceContextError);
+        }
+
+        let context_mut = unsafe { &mut **context };
+        context_mut.hw_device_ctx = unsafe { av_buffer_ref(hw_device_ctx) };
+        unsafe { av_buffer_unref(&mut hw_device_ctx) };
+
+        if kind.is_encoder() {
+            let hw_frames_ctx = unsafe { av_hwframe_ctx_alloc(context_mut.hw_device_ctx) };
+            if hw_frames_ctx.is_null() {
+                unsafe { avcodec_free_context(context) };
+                return Err(CreateVideoContextError::AllocAVHardwareFrameContextError);
+            }
+
+            let size = size.expect("VAAPI encoder requires explicit frame Size");
+            unsafe {
+                let frames_ctx = &mut *((&mut *hw_frames_ctx).data as *mut AVHWFramesContext);
+                frames_ctx.format = AVPixelFormat::AV_PIX_FMT_VAAPI;
+                frames_ctx.sw_format = AVPixelFormat::AV_PIX_FMT_NV12;
+                frames_ctx.width = size.width as i32;
+                frames_ctx.height = size.height as i32;
+                frames_ctx.initial_pool_size = 20;
+            }
+
+            if unsafe { av_hwframe_ctx_init(hw_frames_ctx) } != 0 {
+                unsafe {
+                    let mut tmp = hw_frames_ctx;
+                    av_buffer_unref(&mut tmp);
+                    avcodec_free_context(context);
+                }
+                return Err(CreateVideoContextError::InitAVHardwareFrameContextError);
+            }
+
+            unsafe {
+                context_mut.hw_frames_ctx = av_buffer_ref(hw_frames_ctx);
+                let mut tmp = hw_frames_ctx;
+                av_buffer_unref(&mut tmp);
+            }
+        }
     }
 
     Ok(codec)

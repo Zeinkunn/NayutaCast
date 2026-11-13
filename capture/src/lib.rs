@@ -9,6 +9,8 @@ mod win32 {
 mod linux {
     pub mod pipewire_screen;
     pub mod pipewire_audio;
+    pub mod virtual_display;
+    pub mod wlr_screencopy;
     pub mod x11_screen;
     pub mod v4l2_camera;
 
@@ -232,6 +234,7 @@ pub use self::linux::{
     AudioCapture, AudioCaptureError,
     CameraCapture, CameraCaptureError,
     ScreenCapture, ScreenCaptureError,
+    virtual_display::{DisplayMode, HyprMonitorInfo, VirtualDisplayError, VirtualDisplayGuard},
 };
 
 #[cfg(target_os = "macos")]
@@ -240,6 +243,89 @@ pub use self::macos::{
     camera::{CameraCapture, CameraCaptureError},
     screen::{ScreenCapture, ScreenCaptureError},
 };
+
+#[cfg(not(target_os = "linux"))]
+mod virtual_display_stub {
+    use thiserror::Error;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum DisplayMode {
+        Mirror,
+        Extend,
+    }
+
+    impl DisplayMode {
+        pub fn from_str_lossy(s: &str) -> Self {
+            if s.eq_ignore_ascii_case("extend") {
+                Self::Extend
+            } else {
+                Self::Mirror
+            }
+        }
+
+        pub fn as_str(&self) -> &'static str {
+            match self {
+                Self::Mirror => "mirror",
+                Self::Extend => "extend",
+            }
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct HyprMonitorInfo {
+        pub id: i64,
+        pub name: String,
+        pub width: u32,
+        pub height: u32,
+        pub x: i32,
+        pub y: i32,
+        pub refresh_rate: f32,
+        pub mirror_of: String,
+        pub disabled: bool,
+    }
+
+    #[derive(Debug, Error)]
+    #[error("Virtual display is only supported on Linux Wayland/Hyprland")]
+    pub struct VirtualDisplayError;
+
+    pub struct VirtualDisplayGuard {
+        mode: DisplayMode,
+        primary_monitor: Option<String>,
+    }
+
+    impl VirtualDisplayGuard {
+        pub fn acquire(
+            mode: DisplayMode,
+            preferred_monitor: Option<&str>,
+            _w: u32,
+            _h: u32,
+            _fps: u8,
+            _create_virtual: bool,
+        ) -> Self {
+            Self {
+                mode,
+                primary_monitor: preferred_monitor.map(|s| s.to_string()),
+            }
+        }
+        pub fn preferred_source_id(&self) -> Option<String> {
+            self.primary_monitor.clone()
+        }
+        pub fn apply_mode(&mut self, mode: DisplayMode) -> Result<(), VirtualDisplayError> {
+            self.mode = mode;
+            Ok(())
+        }
+        pub fn virtual_output_name(&self) -> Option<&str> {
+            None
+        }
+        pub fn mode(&self) -> DisplayMode {
+            self.mode
+        }
+        pub fn release(&mut self) {}
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub use virtual_display_stub::{DisplayMode, HyprMonitorInfo, VirtualDisplayError, VirtualDisplayGuard};
 
 #[cfg(target_os = "windows")]
 use common::win32::Direct3DDevice;

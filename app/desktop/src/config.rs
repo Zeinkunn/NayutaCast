@@ -1,121 +1,101 @@
-use std::{
-    env,
-    env::current_exe,
-    fs,
-    path::{Path, PathBuf},
-};
+use std::fs;
+use std::path::PathBuf;
+use serde::{Deserialize, Serialize};
 
-use clap::Parser;
-
-#[derive(Debug, Parser)]
-#[command(
-    about = env!("CARGO_PKG_DESCRIPTION"),
-    version = env!("CARGO_PKG_VERSION"),
-    author = env!("CARGO_PKG_AUTHORS"),
-)]
-pub struct AppConfig {
-    #[arg(long, env = "NAYUTACAST_CACHE_PATH", default_value_t = Self::default_cache_path())]
-    pub cache_path: String,
-    #[arg(long, env = "NAYUTACAST_URI", default_value_t = Self::default_uri())]
-    pub uri: String,
-    #[arg(long, env = "NAYUTACAST_CHEME_PATH", default_value_t = Self::default_cheme_path())]
-    pub cheme_path: String,
-    #[arg(long, env = "NAYUTACAST_SUBPROCESS_PATH", default_value_t = Self::default_subprocess_path())]
-    pub subprocess_path: String,
-    #[arg(long, env = "NAYUTACAST_USERNAME", default_value_t = Self::default_username())]
-    pub username: String,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppSettings {
+    pub device_name: String,
+    pub port: u16,
+    pub mtu: u32,
+    pub resolution_width: u32,
+    pub resolution_height: u32,
+    pub frame_rate: u8,
+    pub video_bitrate_mbps: u32,
+    pub video_encoder: String,
+    pub video_decoder: String,
+    pub audio_sample_rate: u32,
+    pub audio_bitrate_kbps: u32,
+    #[serde(default = "default_display_mode")]
+    pub display_mode: String,
+    #[serde(default = "default_auto")]
+    pub target_monitor: String,
+    #[serde(default = "default_true")]
+    pub create_virtual_display: bool,
+    #[serde(default = "default_true")]
+    pub capture_audio: bool,
+    #[serde(default = "default_auto")]
+    pub audio_source: String,
+    #[serde(default = "default_preferred_protocol")]
+    pub preferred_protocol: String,
+    #[serde(default)]
+    pub wayland_restore_token: Option<String>,
 }
 
-impl AppConfig {
-    pub fn default_cache_path() -> String {
-        if cfg!(target_os = "macos") || cfg!(target_os = "windows") {
-            let path = dirs::data_local_dir()
-                .expect("The current user's local data directory could not be found.")
-                .join("Nayutacast");
-
-            fs::create_dir_all(&path).unwrap();
-            normalize_path(path).unwrap()
-        } else {
-            unimplemented!()
-        }
-    }
-
-    pub fn default_uri() -> String {
-        "webview://localhost/index.html".to_string()
-    }
-
-    pub fn default_cheme_path() -> String {
-        if cfg!(target_os = "macos") {
-            join_with_current_dir("../Resources/webview").unwrap()
-        } else {
-            first_existing_path(["webview", "../app/webview"]).unwrap()
-        }
-    }
-
-    pub fn default_subprocess_path() -> String {
-        if cfg!(target_os = "macos") {
-            join_with_current_dir(
-                "../Frameworks/Nayutacast Helper.app/Contents/MacOS/Nayutacast Helper",
-            )
-            .unwrap()
-        } else if cfg!(target_os = "windows") {
-            join_with_current_dir("nayutacast-app-helper.exe").unwrap()
-        } else {
-            unimplemented!()
-        }
-    }
-
-    pub fn default_username() -> String {
-        ["USERNAME", "USER", "LOGNAME"]
-            .into_iter()
-            .find_map(|key| {
-                env::var(key)
-                    .ok()
-                    .map(|value| value.trim().to_string())
-                    .filter(|value| !value.is_empty())
-            })
-            .or_else(|| {
-                dirs::home_dir()
-                    .and_then(|path| path.file_name().map(|name| name.to_owned()))
-                    .and_then(|name| name.into_string().ok())
-                    .filter(|value| !value.is_empty())
-            })
-            .unwrap_or_else(|| "unknown".to_string())
-    }
+fn default_display_mode() -> String {
+    "mirror".to_string()
 }
 
-fn join_with_current_dir(chlid: &str) -> Option<String> {
-    let mut path = current_exe().ok()?;
-
-    path.pop();
-    normalize_existing_path(path.join(chlid))
+fn default_auto() -> String {
+    "auto".to_string()
 }
 
-fn first_existing_path<const N: usize>(children: [&str; N]) -> Option<String> {
-    let mut path = current_exe().ok()?;
-    path.pop();
-
-    children
-        .into_iter()
-        .find_map(|child| normalize_existing_path(path.join(child)))
+fn default_true() -> bool {
+    true
 }
 
-fn normalize_existing_path(path: PathBuf) -> Option<String> {
-    normalize_path(path.canonicalize().ok()?)
+fn default_preferred_protocol() -> String {
+    "Auto".to_string()
 }
 
-fn normalize_path(path: impl AsRef<Path>) -> Option<String> {
-    Some(
-        path.as_ref()
-            .to_str()?
-            .to_string()
-            .replace("\\\\?\\", "")
-            .replace("\\", "/"),
-    )
-}
-
-impl Default for AppConfig {
+impl Default for AppSettings {
     fn default() -> Self {
-        Self::parse()
+        Self {
+            device_name: "NayutaCast Device".to_string(),
+            port: 8080,
+            mtu: 1500,
+            resolution_width: 1920,
+            resolution_height: 1080,
+            frame_rate: 60,
+            video_bitrate_mbps: 10,
+            video_encoder: "VAAPI (Hardware)".to_string(),
+            video_decoder: "VAAPI (Hardware)".to_string(),
+            audio_sample_rate: 48000,
+            audio_bitrate_kbps: 128,
+            display_mode: default_display_mode(),
+            target_monitor: default_auto(),
+            create_virtual_display: true,
+            capture_audio: true,
+            audio_source: default_auto(),
+            preferred_protocol: default_preferred_protocol(),
+            wayland_restore_token: None,
+        }
+    }
+}
+
+impl AppSettings {
+    pub fn config_file_path() -> PathBuf {
+        let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
+        let dir = base.join("nayutacast");
+        let _ = fs::create_dir_all(&dir);
+        dir.join("settings.json")
+    }
+
+    pub fn load() -> Self {
+        let path = Self::config_file_path();
+        if path.exists() {
+            if let Ok(content) = fs::read_to_string(&path) {
+                if let Ok(settings) = serde_json::from_str::<AppSettings>(&content) {
+                    return settings;
+                }
+            }
+        }
+        Self::default()
+    }
+
+    pub fn save(&self) -> anyhow::Result<()> {
+        let path = Self::config_file_path();
+        let json = serde_json::to_string_pretty(self)?;
+        fs::write(path, json)?;
+        Ok(())
     }
 }
