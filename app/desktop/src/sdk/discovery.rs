@@ -14,9 +14,10 @@ use tokio::sync::{RwLock, Semaphore};
 use url::Url;
 
 use crate::sdk::net_utils::{
-    self, LocalInterface, http_request, infer_network_kind_for_ip, list_active_ipv4_interfaces,
-    tcp_port_open,
+    self, LocalInterface, WifiNetworkContext, http_request, infer_network_kind_for_ip,
+    list_active_ipv4_interfaces, read_wifi_network_context, tcp_port_open,
 };
+use socket2::{Domain, Protocol, Socket as Socket2, Type};
 
 pub use net_utils::NetworkKind as DeviceKind;
 
@@ -220,6 +221,304 @@ pub struct ParsedUpnpDevice {
     pub av_transport_control_url: Option<String>,
     pub connection_mgr_control_url: Option<String>,
     pub has_dial: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AirPlayEndpointInfo {
+    pub name: Option<String>,
+    pub model: Option<String>,
+    pub manufacturer: Option<String>,
+    pub has_pk: bool,
+    pub status_flags: Option<u64>,
+    pub os_build: Option<String>,
+}
+
+fn read_be_u64(slice: &[u8]) -> u64 {
+    slice.iter().fold(0u64, |acc, &b| (acc << 8) | (b as u64))
+}
+
+fn read_bplist_int_and_count(data: &[u8], pos: usize, marker: u8) -> Option<(usize, usize)> {
+    let low = marker & 0x0F;
+    if low < 0x0F {
+        return Some((low as usize, pos + 1));
+    }
+    let ext = *data.get(pos + 1)?;
+    if (ext & 0xF0) != 0x10 {
+        return None;
+    }
+    let byte_len = 1usize << (ext & 0x0F);
+    if byte_len > 8 {
+        return None;
+    }
+    let slice = data.get(pos + 2..pos + 2 + byte_len)?;
+    let val = usize::try_from(read_be_u64(slice)).ok()?;
+    Some((val, pos + 2 + byte_len))
+}
+
+fn decode_bplist_scalar(data: &[u8], offsets: &[usize], obj_idx: usize) -> Option<String> {
+    let off = *offsets.get(obj_idx)?;
+    let marker = *data.get(off)?;
+    let kind = marker & 0xF0;
+    match marker {
+        0x08 => Some("false".to_string()),
+        0x09 => Some("true".to_string()),
+        _ if kind == 0x10 => {
+            let byte_len = 1usize << (marker & 0x0F);
+            if byte_len > 8 {
+                return None;
+            }
+            let slice = data.get(off + 1..off + 1 + byte_len)?;
+            Some(read_be_u64(slice).to_string())
+        }
+        _ if kind == 0x40 => {
+            let (len, _) = read_bplist_int_and_count(data, off, marker)?;
+            Some(format!("<{}B>", len))
+        }
+        _ if kind == 0x50 => {
+            let (len, start) = read_bplist_int_and_count(data, off, marker)?;
+            let slice = data.get(start..start.checked_add(len)?)?;
+            Some(String::from_utf8_lossy(slice).trim().to_string())
+        }
+        _ if kind == 0x60 => {
+            let (chars_len, start) = read_bplist_int_and_count(data, off, marker)?;
+            let byte_len = chars_len.checked_mul(2)?;
+            let slice = data.get(start..start.checked_add(byte_len)?)?;
+            let units: Vec<u16> = (0..chars_len)
+                .filter_map(|i| {
+                    let pair = slice.get(i * 2..i * 2 + 2)?;
+                    Some(u16::from_be_bytes([pair[0], pair[1]]))
+                })
+                .collect();
+            Some(String::from_utf16_lossy(&units).trim().to_string())
+        }
+        _ => None,
+    }
+}
+
+/// Parses the top-level dictionary of an Apple binary plist (`bplist00`) into
+/// stringified scalar fields (`name`, `model`, `statusFlags`, `pk`, etc.).
+pub fn parse_bplist00_top_dict(data: &[u8]) -> Option<HashMap<String, String>> {
+    if data.len() < 40 || &data[..8] != b"bplist00" {
+        return None;
+    }
+    let trailer_start = data.len() - 32;
+    let trailer = &data[trailer_start..];
+    let offset_int_size = trailer[6] as usize;
+    let object_ref_size = trailer[7] as usize;
+    if !matches!(offset_int_size, 1 | 2 | 4 | 8) || !matches!(object_ref_size, 1 | 2 | 4 | 8) {
+        return None;
+    }
+
+    let num_objects = usize::try_from(u64::from_be_bytes(trailer[8..16].try_into().ok()?)).ok()?;
+    let top_object = usize::try_from(u64::from_be_bytes(trailer[16..24].try_into().ok()?)).ok()?;
+    let offset_table_offset =
+        usize::try_from(u64::from_be_bytes(trailer[24..32].try_into().ok()?)).ok()?;
+
+    if num_objects == 0 || top_object >= num_objects || num_objects > 100_000 {
+        return None;
+    }
+    let table_bytes = num_objects.checked_mul(offset_int_size)?;
+    if offset_table_offset < 8 || offset_table_offset.checked_add(table_bytes)? > trailer_start {
+        return None;
+    }
+
+    let mut offsets = Vec::with_capacity(num_objects);
+    for i in 0..num_objects {
+        let pos = offset_table_offset + i * offset_int_size;
+        let off = usize::try_from(read_be_u64(&data[pos..pos + offset_int_size])).ok()?;
+        if off < 8 || off >= offset_table_offset {
+            return None;
+        }
+        offsets.push(off);
+    }
+
+    let top_off = *offsets.get(top_object)?;
+    let top_marker = *data.get(top_off)?;
+    if (top_marker & 0xF0) != 0xD0 {
+        return None;
+    }
+    let (count, refs_start) = read_bplist_int_and_count(data, top_off, top_marker)?;
+    let refs_bytes = count.checked_mul(2)?.checked_mul(object_ref_size)?;
+    if refs_start.checked_add(refs_bytes)? > offset_table_offset {
+        return None;
+    }
+
+    let mut map = HashMap::new();
+    for i in 0..count {
+        let k_pos = refs_start + i * object_ref_size;
+        let v_pos = refs_start + (count + i) * object_ref_size;
+        let k_idx = usize::try_from(read_be_u64(&data[k_pos..k_pos + object_ref_size])).ok()?;
+        let v_idx = usize::try_from(read_be_u64(&data[v_pos..v_pos + object_ref_size])).ok()?;
+        if let Some(key) = decode_bplist_scalar(data, &offsets, k_idx)
+            && !key.is_empty()
+            && let Some(val) = decode_bplist_scalar(data, &offsets, v_idx)
+        {
+            map.insert(key, val);
+        }
+    }
+    Some(map)
+}
+
+/// Parses an XML `<plist><dict>...</dict></plist>` AirPlay `/server-info` body.
+pub fn parse_xml_plist_top_dict(xml: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let Ok(doc) = roxmltree::Document::parse(xml) else {
+        return map;
+    };
+    let Some(dict) = doc
+        .descendants()
+        .find(|n| n.tag_name().name().eq_ignore_ascii_case("dict"))
+    else {
+        return map;
+    };
+    let mut current_key: Option<String> = None;
+    for child in dict.children().filter(|c| c.is_element()) {
+        let tag = child.tag_name().name();
+        if tag.eq_ignore_ascii_case("key") {
+            current_key = child
+                .text()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+        } else if let Some(key) = current_key.take() {
+            let val = if tag.eq_ignore_ascii_case("true") {
+                Some("true".to_string())
+            } else if tag.eq_ignore_ascii_case("false") {
+                Some("false".to_string())
+            } else {
+                child.text().map(|s| s.trim().to_string())
+            };
+            if let Some(v) = val
+                && !v.is_empty()
+            {
+                map.insert(key, v);
+            }
+        }
+    }
+    map
+}
+
+fn infer_airplay_manufacturer(model: Option<&str>) -> Option<String> {
+    let m = model?;
+    let low = m.to_ascii_lowercase();
+    if low.starts_with("mac")
+        || low.starts_with("appletv")
+        || low.starts_with("iphone")
+        || low.starts_with("ipad")
+    {
+        Some("Apple".to_string())
+    } else if low.contains("polytron") {
+        Some("Polytron".to_string())
+    } else if low.contains("android") {
+        Some("Android TV".to_string())
+    } else {
+        None
+    }
+}
+
+/// Queries an AirPlay receiver (`/info` binary/XML plist, falling back to
+/// `/server-info`) for accurate device name, model, and FairPlay metadata.
+pub async fn probe_airplay_info(ip: IpAddr, port: u16) -> Option<AirPlayEndpointInfo> {
+    let base = format!("http://{}:{}", ip, port);
+    let mut merged = HashMap::new();
+
+    for (path, ua) in [
+        ("/info", "AirPlay/540.31"),
+        ("/server-info", "MediaControl/1.0"),
+    ] {
+        if let Ok(resp) = http_request(
+            "GET",
+            &format!("{}{}", base, path),
+            &[("User-Agent", ua)],
+            None,
+            Duration::from_millis(1200),
+        )
+        .await
+            && resp.status < 400
+            && !resp.body.is_empty()
+        {
+            if let Some(dict) = parse_bplist00_top_dict(&resp.body) {
+                for (k, v) in dict {
+                    merged.entry(k).or_insert(v);
+                }
+            } else {
+                let text = resp.body_str();
+                for (k, v) in parse_xml_plist_top_dict(&text) {
+                    merged.entry(k).or_insert(v);
+                }
+            }
+            if merged.contains_key("model") && merged.contains_key("name") {
+                break;
+            }
+        }
+    }
+
+    if merged.is_empty() {
+        return None;
+    }
+
+    let model = merged.get("model").cloned().filter(|s| !s.is_empty());
+    let manufacturer = merged
+        .get("manufacturer")
+        .cloned()
+        .or_else(|| infer_airplay_manufacturer(model.as_deref()));
+    let name = merged
+        .get("name")
+        .or_else(|| merged.get("deviceName"))
+        .cloned()
+        .filter(|s| !s.is_empty());
+    let status_flags = merged
+        .get("statusFlags")
+        .and_then(|s| s.parse::<u64>().ok());
+    let os_build = merged.get("osBuildVersion").cloned();
+
+    Some(AirPlayEndpointInfo {
+        name,
+        model,
+        manufacturer,
+        has_pk: merged.contains_key("pk"),
+        status_flags,
+        os_build,
+    })
+}
+
+async fn probe_chromecast_eureka_info(
+    ip: IpAddr,
+) -> Option<(Option<String>, Option<String>, Option<String>)> {
+    let url = format!("http://{}:8008/setup/eureka_info?options=detail", ip);
+    let resp = http_request("GET", &url, &[], None, Duration::from_millis(600))
+        .await
+        .ok()?;
+    if resp.status >= 400 || resp.body.is_empty() {
+        return None;
+    }
+    let val: serde_json::Value = serde_json::from_slice(&resp.body).ok()?;
+    let name = val
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let detail = val.get("detail");
+    let mfg = detail
+        .and_then(|d| d.get("manufacturer"))
+        .or_else(|| val.get("manufacturer"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let model = detail
+        .and_then(|d| d.get("model_name"))
+        .or_else(|| val.get("model_name"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
+    if name.is_none() && mfg.is_none() && model.is_none() {
+        None
+    } else {
+        Some((name, mfg, model))
+    }
 }
 
 /// Parses a UPnP/SSDP `device-desc.xml` document and filters out
@@ -443,6 +742,8 @@ pub fn parse_mdns_response(pkt: &[u8]) -> Vec<ParsedMdnsService> {
             .map(|inst| {
                 let st = if inst.contains("_googlecast") {
                     "_googlecast._tcp.local".to_string()
+                } else if inst.contains("_raop") {
+                    "_raop._tcp.local".to_string()
                 } else {
                     "_airplay._tcp.local".to_string()
                 };
@@ -453,9 +754,10 @@ pub fn parse_mdns_response(pkt: &[u8]) -> Vec<ParsedMdnsService> {
 
     for (svc_type, inst) in candidates {
         let inst_low = inst.to_ascii_lowercase();
+        let is_raop = svc_type.contains("_raop") || inst_low.contains("_raop");
         let protocol = if svc_type.contains("_googlecast") || inst_low.contains("_googlecast") {
             CastProtocol::GoogleCast
-        } else if svc_type.contains("_airplay") || inst_low.contains("_airplay") {
+        } else if svc_type.contains("_airplay") || inst_low.contains("_airplay") || is_raop {
             CastProtocol::AirPlay
         } else {
             continue;
@@ -466,9 +768,16 @@ pub fn parse_mdns_response(pkt: &[u8]) -> Vec<ParsedMdnsService> {
         };
         let ip = a_recs.get(&target_host.to_ascii_lowercase()).copied();
         let txt = txts.get(&inst_low);
-        let friendly_name = txt
-            .and_then(|m| m.get("fn").cloned())
-            .or_else(|| Some(inst.split('.').next().unwrap_or(&inst).to_string()));
+        let friendly_name = txt.and_then(|m| m.get("fn").cloned()).or_else(|| {
+            let head = inst.split('.').next().unwrap_or(&inst);
+            if is_raop
+                && let Some((_, tail)) = head.split_once('@')
+                && !tail.trim().is_empty()
+            {
+                return Some(tail.trim().to_string());
+            }
+            Some(head.to_string())
+        });
         let model = txt.and_then(|m| m.get("md").or_else(|| m.get("model")).cloned());
 
         out.push(ParsedMdnsService {
@@ -644,12 +953,22 @@ impl DiscoveryObserver for AppDiscoveryObserver {
     }
 }
 
+struct ProbeRequest {
+    ip: IpAddr,
+    custom_name: Option<String>,
+    protocol_override: Option<CastProtocol>,
+    network_override: Option<DeviceKind>,
+    is_custom: bool,
+    deep_dlna: bool,
+}
+
 pub struct DeviceManager {
     pub devices: Arc<RwLock<HashMap<String, DeviceInfo>>>,
     pub scanning: Arc<RwLock<bool>>,
     service: Arc<RwLock<Option<Arc<DiscoveryService>>>>,
     local_name: Arc<RwLock<String>>,
     ifaces_snapshot: Arc<RwLock<Vec<LocalInterface>>>,
+    wifi_context: Arc<RwLock<Option<WifiNetworkContext>>>,
 }
 
 impl DeviceManager {
@@ -660,6 +979,7 @@ impl DeviceManager {
             service: Arc::new(RwLock::new(None)),
             local_name: Arc::new(RwLock::new(device_name.to_string())),
             ifaces_snapshot: Arc::new(RwLock::new(list_active_ipv4_interfaces())),
+            wifi_context: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -762,13 +1082,48 @@ impl DeviceManager {
         let if_mdns = ifaces.clone();
         let if_probe = ifaces;
 
-        let (_, _, _) = tokio::join!(
+        let (_, _, _, wifi_ctx) = tokio::join!(
             Self::scan_ssdp_multi_nic(d_ssdp, if_ssdp),
             Self::scan_mdns_multi_nic(d_mdns, if_mdns),
             Self::scan_arp_and_subnet(d_probe, if_probe),
+            read_wifi_network_context(),
         );
+        *self.wifi_context.write().await = wifi_ctx;
 
         *self.scanning.write().await = false;
+    }
+
+    fn bind_multicast_udp(iface_ip: Ipv4Addr, port: Option<(u16, Ipv4Addr)>) -> Option<UdpSocket> {
+        let sock = Socket2::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).ok()?;
+        let _ = sock.set_nonblocking(true);
+        let _ = sock.set_reuse_address(true);
+        #[cfg(all(unix, not(any(target_os = "solaris", target_os = "illumos"))))]
+        let _ = sock.set_reuse_port(true);
+
+        if let Some((mcast_port, mcast_group)) = port {
+            let any_addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, mcast_port));
+            if sock.bind(&any_addr.into()).is_ok()
+                && sock.join_multicast_v4(&mcast_group, &iface_ip).is_ok()
+            {
+                let _ = sock.set_multicast_if_v4(&iface_ip);
+                let std_sock: StdUdpSocket = sock.into();
+                return UdpSocket::from_std(std_sock).ok();
+            }
+            // Fallback to ephemeral port on the NIC if 5353 could not bind.
+            let fallback = Socket2::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).ok()?;
+            let _ = fallback.set_nonblocking(true);
+            let bind_addr = SocketAddr::from((iface_ip, 0));
+            fallback.bind(&bind_addr.into()).ok()?;
+            let _ = fallback.set_multicast_if_v4(&iface_ip);
+            let std_sock: StdUdpSocket = fallback.into();
+            return UdpSocket::from_std(std_sock).ok();
+        }
+
+        let bind_addr = SocketAddr::from((iface_ip, 0));
+        sock.bind(&bind_addr.into()).ok()?;
+        let _ = sock.set_multicast_if_v4(&iface_ip);
+        let std_sock: StdUdpSocket = sock.into();
+        UdpSocket::from_std(std_sock).ok()
     }
 
     async fn scan_ssdp_multi_nic(
@@ -780,18 +1135,15 @@ impl DeviceManager {
             "urn:schemas-upnp-org:service:AVTransport:1",
             "urn:dial-multiscreen-org:service:dial:1",
             "roku:ecp",
+            "upnp:rootdevice",
+            "ssdp:all",
         ];
 
         let mut seen_locations = HashSet::new();
         let mut raw_hits: Vec<(IpAddr, String, String)> = Vec::new();
 
         for iface in &ifaces {
-            let bind_addr = SocketAddr::from((iface.ip, 0));
-            let Ok(std_sock) = StdUdpSocket::bind(bind_addr) else {
-                continue;
-            };
-            let _ = std_sock.set_nonblocking(true);
-            let Ok(sock) = UdpSocket::from_std(std_sock) else {
+            let Some(sock) = Self::bind_multicast_udp(iface.ip, None) else {
                 continue;
             };
 
@@ -905,15 +1257,16 @@ impl DeviceManager {
         devices: Arc<RwLock<HashMap<String, DeviceInfo>>>,
         ifaces: Vec<LocalInterface>,
     ) {
-        let query = build_mdns_ptr_query(&["_googlecast._tcp.local", "_airplay._tcp.local"]);
-        let mdns_dest = SocketAddr::from((Ipv4Addr::new(224, 0, 0, 251), 5353));
+        let query = build_mdns_ptr_query(&[
+            "_googlecast._tcp.local",
+            "_airplay._tcp.local",
+            "_raop._tcp.local",
+        ]);
+        let mdns_ip = Ipv4Addr::new(224, 0, 0, 251);
+        let mdns_dest = SocketAddr::from((mdns_ip, 5353));
 
         for iface in &ifaces {
-            let Ok(std_sock) = StdUdpSocket::bind(SocketAddr::from((iface.ip, 0))) else {
-                continue;
-            };
-            let _ = std_sock.set_nonblocking(true);
-            let Ok(sock) = UdpSocket::from_std(std_sock) else {
+            let Some(sock) = Self::bind_multicast_udp(iface.ip, Some((5353, mdns_ip))) else {
                 continue;
             };
 
@@ -930,17 +1283,30 @@ impl DeviceManager {
                         for svc in parse_mdns_response(&buf[..len]) {
                             let ip = svc.ip.map(IpAddr::V4).unwrap_or_else(|| src_addr.ip());
                             let net = infer_network_kind_for_ip(ip, &ifaces);
+                            let airplay_port = if svc.protocol == CastProtocol::AirPlay {
+                                if svc.service_type.contains("_airplay") {
+                                    Some(svc.port)
+                                } else {
+                                    Some(7000)
+                                }
+                            } else {
+                                None
+                            };
                             let dev = DeviceInfo {
                                 id: format!("ip:{}", ip),
                                 name: svc
                                     .friendly_name
                                     .unwrap_or_else(|| format!("Smart TV ({})", ip)),
                                 ip,
-                                port: svc.port,
+                                port: if svc.protocol == CastProtocol::AirPlay {
+                                    airplay_port.unwrap_or(7000)
+                                } else {
+                                    svc.port
+                                },
                                 network: net,
                                 manufacturer: match svc.protocol {
                                     CastProtocol::GoogleCast => Some("Google / Android TV".into()),
-                                    CastProtocol::AirPlay => Some("Apple / AirPlay".into()),
+                                    CastProtocol::AirPlay => Some("AirPlay Receiver".into()),
                                     _ => None,
                                 },
                                 model_name: svc.model,
@@ -950,8 +1316,7 @@ impl DeviceManager {
                                 location_url: None,
                                 cast_port: (svc.protocol == CastProtocol::GoogleCast)
                                     .then_some(svc.port),
-                                airplay_port: (svc.protocol == CastProtocol::AirPlay)
-                                    .then_some(svc.port),
+                                airplay_port,
                                 roku_port: None,
                                 nayutacast_peer_id: None,
                                 is_custom: false,
@@ -970,45 +1335,65 @@ impl DeviceManager {
         ifaces: Vec<LocalInterface>,
     ) {
         let mut candidate_ips: HashSet<IpAddr> = HashSet::new();
+        let mut arp_ips: HashSet<IpAddr> = HashSet::new();
 
         if let Ok(arp) = tokio::fs::read_to_string("/proc/net/arp").await {
             for line in arp.lines().skip(1) {
-                if let Some(ip_str) = line.split_whitespace().next()
-                    && let Ok(ip) = ip_str.parse::<IpAddr>()
+                let mut cols = line.split_whitespace();
+                let Some(ip_str) = cols.next() else {
+                    continue;
+                };
+                let _hw_type = cols.next();
+                let flags = cols.next().unwrap_or("");
+                let mac = cols.next().unwrap_or("");
+                if let Ok(ip) = ip_str.parse::<IpAddr>()
                     && !ip.is_loopback()
                     && !ip.is_unspecified()
                 {
                     candidate_ips.insert(ip);
+                    if flags != "0x0" && mac != "00:00:00:00:00:00" {
+                        arp_ips.insert(ip);
+                    }
                 }
             }
         }
 
-        // Add bounded /24 neighbors for active Wi-Fi/LAN subnets so asleep TVs
-        // with empty ARP are still found.
+        // Add subnet neighbors (handles /24, /23, /22 up to 1024 hosts per NIC)
+        // so asleep or multicast-isolated TVs are still found.
         for iface in &ifaces {
             let octets = iface.ip.octets();
             if octets[0] == 172 && (16..=31).contains(&octets[1]) {
                 continue; // skip private docker/bridge-like ranges if any remained
             }
-            for host in 2u8..=254u8 {
-                let ip = Ipv4Addr::new(octets[0], octets[1], octets[2], host);
-                if ip != iface.ip {
-                    candidate_ips.insert(IpAddr::V4(ip));
-                }
+            for host in iface.subnet_ipv4_hosts(1024) {
+                candidate_ips.insert(IpAddr::V4(host));
             }
         }
 
-        let sem = Arc::new(Semaphore::new(64));
+        let sem = Arc::new(Semaphore::new(96));
         let mut handles = Vec::with_capacity(candidate_ips.len());
         for ip in candidate_ips {
             let sem = sem.clone();
             let devices = devices.clone();
             let ifaces = ifaces.clone();
+            let deep_dlna = arp_ips.contains(&ip);
             handles.push(tokio::spawn(async move {
                 let Ok(_permit) = sem.acquire().await else {
                     return;
                 };
-                Self::probe_single_ip(&devices, ip, None, None, None, &ifaces, false).await;
+                Self::probe_single_ip(
+                    &devices,
+                    ProbeRequest {
+                        ip,
+                        custom_name: None,
+                        protocol_override: None,
+                        network_override: None,
+                        is_custom: false,
+                        deep_dlna,
+                    },
+                    &ifaces,
+                )
+                .await;
             }));
         }
 
@@ -1017,32 +1402,80 @@ impl DeviceManager {
         }
     }
 
+    async fn probe_dlna_xml_on_host(
+        ip: IpAddr,
+        timeout: Duration,
+    ) -> Option<(String, ParsedUpnpDevice)> {
+        let dlna_ports = [
+            49152u16, 49153, 49154, 49155, 38400, 1990, 7676, 8200, 52235, 56789, 2870,
+        ];
+        let paths = [
+            "/dmr.xml",
+            "/description.xml",
+            "/MediaRenderer/desc.xml",
+            "/dev/0/desc.xml",
+            "/upnp/desc.xml",
+            "/rootDesc.xml",
+        ];
+        for port in dlna_ports {
+            if !tcp_port_open(ip, port, timeout).await {
+                continue;
+            }
+            for path in paths {
+                let url = format!("http://{}:{}{}", ip, port, path);
+                if let Ok(r) =
+                    http_request("GET", &url, &[], None, Duration::from_millis(550)).await
+                    && r.status < 400
+                    && let Some(parsed) = parse_upnp_device_xml(&url, &r.body_str())
+                {
+                    return Some((url, parsed));
+                }
+            }
+        }
+        None
+    }
+
     async fn probe_single_ip(
         devices: &Arc<RwLock<HashMap<String, DeviceInfo>>>,
-        ip: IpAddr,
-        custom_name: Option<String>,
-        protocol_override: Option<CastProtocol>,
-        network_override: Option<DeviceKind>,
+        req: ProbeRequest,
         ifaces: &[LocalInterface],
-        is_custom: bool,
     ) -> Option<DeviceInfo> {
+        let ProbeRequest {
+            ip,
+            custom_name,
+            protocol_override,
+            network_override,
+            is_custom,
+            deep_dlna,
+        } = req;
         let timeout = if is_custom {
             Duration::from_millis(600)
         } else {
             Duration::from_millis(140)
         };
 
-        let (p8009, p8008, p7000, p8060, p8080, p9197) = tokio::join!(
+        let (p8009, p8008, p7000, p7001, p7100, p8060, p8080, p9197) = tokio::join!(
             tcp_port_open(ip, 8009, timeout),
             tcp_port_open(ip, 8008, timeout),
             tcp_port_open(ip, 7000, timeout),
+            tcp_port_open(ip, 7001, timeout),
+            tcp_port_open(ip, 7100, timeout),
             tcp_port_open(ip, 8060, timeout),
             tcp_port_open(ip, 8080, timeout),
             tcp_port_open(ip, 9197, timeout),
         );
 
-        let any_open = p8009 || p8008 || p7000 || p8060 || p8080 || p9197;
-        if !any_open && !is_custom {
+        let airplay_open_port = [
+            p7000.then_some(7000),
+            p7001.then_some(7001),
+            p7100.then_some(7100),
+        ]
+        .into_iter()
+        .flatten()
+        .next();
+
+        let any_open = p8009 || p8008 || airplay_open_port.is_some() || p8060 || p8080 || p9197;
+        if !any_open && !is_custom && !deep_dlna {
             return None;
         }
 
@@ -1075,13 +1508,49 @@ impl DeviceManager {
                     }
                 }
             }
+
+            if (friendly_name.is_none() || manufacturer.is_none() || model_name.is_none())
+                && let Some((ek_name, ek_mfg, ek_model)) = probe_chromecast_eureka_info(ip).await
+            {
+                if friendly_name.is_none() {
+                    friendly_name = ek_name;
+                }
+                manufacturer = manufacturer.or(ek_mfg);
+                model_name = model_name.or(ek_model);
+                if !protocols.contains(&CastProtocol::GoogleCast) {
+                    protocols.push(CastProtocol::GoogleCast);
+                }
+            }
         }
 
         if p8009 && !protocols.contains(&CastProtocol::GoogleCast) {
             protocols.push(CastProtocol::GoogleCast);
         }
-        if p7000 && !protocols.contains(&CastProtocol::AirPlay) {
-            protocols.push(CastProtocol::AirPlay);
+
+        let mut detected_airplay_port = airplay_open_port;
+        if let Some(ap_port) = airplay_open_port {
+            if !protocols.contains(&CastProtocol::AirPlay) {
+                protocols.push(CastProtocol::AirPlay);
+            }
+            for port_cand in [
+                p7000.then_some(7000),
+                p7001.then_some(7001),
+                p7100.then_some(7100),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if let Some(ap_info) = probe_airplay_info(ip, port_cand).await {
+                    detected_airplay_port = Some(port_cand);
+                    if friendly_name.is_none() {
+                        friendly_name = ap_info.name;
+                    }
+                    manufacturer = manufacturer.or(ap_info.manufacturer);
+                    model_name = model_name.or(ap_info.model);
+                    break;
+                }
+            }
+            let _ = ap_port;
         }
         if p8060 {
             let roku_url = format!("http://{}:8060/query/device-info", ip);
@@ -1125,22 +1594,35 @@ impl DeviceManager {
             }
         }
 
-        // Unicast SSDP discovery fallback when custom IP is probed or DLNA port
-        // is hidden on ephemeral port.
-        if is_custom
-            && av_ctrl.is_none()
-            && let Some(dlna) = Self::unicast_ssdp_probe(ip).await
-        {
-            if friendly_name.is_none() {
-                friendly_name = Some(dlna.friendly_name);
-            }
-            manufacturer = manufacturer.or(dlna.manufacturer);
-            model_name = model_name.or(dlna.model_name);
-            av_ctrl = dlna.av_transport_control_url;
-            cm_ctrl = dlna.connection_mgr_control_url;
-            for p in dlna.protocols {
-                if !protocols.contains(&p) {
-                    protocols.push(p);
+        // Unicast SSDP & DLNA XML fallback when custom IP, ARP-active host, or
+        // DLNA port is present without a known control URL yet.
+        if (is_custom || deep_dlna || p9197) && av_ctrl.is_none() {
+            if let Some(dlna) = Self::unicast_ssdp_probe(ip).await {
+                if friendly_name.is_none() {
+                    friendly_name = Some(dlna.friendly_name);
+                }
+                manufacturer = manufacturer.or(dlna.manufacturer);
+                model_name = model_name.or(dlna.model_name);
+                av_ctrl = dlna.av_transport_control_url;
+                cm_ctrl = dlna.connection_mgr_control_url;
+                for p in dlna.protocols {
+                    if !protocols.contains(&p) {
+                        protocols.push(p);
+                    }
+                }
+            } else if let Some((url, dlna)) = Self::probe_dlna_xml_on_host(ip, timeout).await {
+                if friendly_name.is_none() {
+                    friendly_name = Some(dlna.friendly_name);
+                }
+                manufacturer = manufacturer.or(dlna.manufacturer);
+                model_name = model_name.or(dlna.model_name);
+                av_ctrl = dlna.av_transport_control_url;
+                cm_ctrl = dlna.connection_mgr_control_url;
+                location_url = location_url.or(Some(url));
+                for p in dlna.protocols {
+                    if !protocols.contains(&p) {
+                        protocols.push(p);
+                    }
                 }
             }
         }
@@ -1165,7 +1647,7 @@ impl DeviceManager {
             } else if protocols.contains(&CastProtocol::DlnaAvTransport) {
                 format!("DLNA Smart TV ({})", ip)
             } else if protocols.contains(&CastProtocol::AirPlay) {
-                format!("Apple TV / AirPlay ({})", ip)
+                format!("AirPlay Device ({})", ip)
             } else if protocols.contains(&CastProtocol::RokuEcp) {
                 format!("Roku TV ({})", ip)
             } else {
@@ -1179,8 +1661,8 @@ impl DeviceManager {
             ip,
             port: if p8009 {
                 8009
-            } else if p7000 {
-                7000
+            } else if let Some(ap_port) = detected_airplay_port {
+                ap_port
             } else if p8060 {
                 8060
             } else {
@@ -1194,7 +1676,7 @@ impl DeviceManager {
             connection_mgr_control_url: cm_ctrl,
             location_url,
             cast_port: p8009.then_some(8009),
-            airplay_port: p7000.then_some(7000),
+            airplay_port: detected_airplay_port,
             roku_port: p8060.then_some(8060),
             nayutacast_peer_id: None,
             is_custom,
@@ -1205,14 +1687,27 @@ impl DeviceManager {
 
     pub async fn unicast_ssdp_probe(ip: IpAddr) -> Option<ParsedUpnpDevice> {
         let sock = UdpSocket::bind("0.0.0.0:0").await.ok()?;
-        let req = "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 1\r\nST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n";
-        let _ = sock
-            .send_to(req.as_bytes(), SocketAddr::new(ip, 1900))
-            .await;
+        for st in [
+            "urn:schemas-upnp-org:device:MediaRenderer:1",
+            "upnp:rootdevice",
+            "ssdp:all",
+        ] {
+            let req = format!(
+                "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 1\r\nST: {}\r\n\r\n",
+                st
+            );
+            let _ = sock
+                .send_to(req.as_bytes(), SocketAddr::new(ip, 1900))
+                .await;
+        }
         let mut buf = [0u8; 4096];
-        if let Ok(Ok((len, _))) =
-            tokio::time::timeout(Duration::from_millis(800), sock.recv_from(&mut buf)).await
-        {
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(850);
+        while tokio::time::Instant::now() < deadline {
+            let remain = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let Ok(Ok((len, _))) = tokio::time::timeout(remain, sock.recv_from(&mut buf)).await
+            else {
+                break;
+            };
             let resp = String::from_utf8_lossy(&buf[..len]);
             if let Some(loc) = resp
                 .lines()
@@ -1240,12 +1735,15 @@ impl DeviceManager {
         let ifaces = self.ifaces_snapshot.read().await.clone();
         Self::probe_single_ip(
             &self.devices,
-            ip,
-            custom_name,
-            protocol_override,
-            Some(kind),
+            ProbeRequest {
+                ip,
+                custom_name,
+                protocol_override,
+                network_override: Some(kind),
+                is_custom: true,
+                deep_dlna: true,
+            },
             &ifaces,
-            true,
         )
         .await
         .unwrap_or_else(|| DeviceInfo {
@@ -1302,6 +1800,19 @@ impl DeviceManager {
             .try_read()
             .ok()
             .map(|g| g.iter().any(|i| i.kind == kind))
+    }
+
+    pub fn active_interface_ip_nonblocking(&self, kind: DeviceKind) -> Option<Ipv4Addr> {
+        self.ifaces_snapshot
+            .try_read()
+            .ok()?
+            .iter()
+            .find(|i| i.kind == kind)
+            .map(|i| i.ip)
+    }
+
+    pub fn wifi_context_nonblocking(&self) -> Option<WifiNetworkContext> {
+        self.wifi_context.try_read().ok().and_then(|g| g.clone())
     }
 
     pub fn trigger_scan(self: &Arc<Self>, rt: &tokio::runtime::Handle) {
@@ -1456,5 +1967,43 @@ mod tests {
         assert_eq!(parsed[0].ip, Some(Ipv4Addr::new(192, 168, 1, 77)));
         assert_eq!(parsed[0].friendly_name.as_deref(), Some("Ruang Tamu TV"));
         assert_eq!(parsed[0].model.as_deref(), Some("BRAVIA 4K"));
+    }
+
+    #[test]
+    fn parse_bplist00_extracts_name_model_and_flags() {
+        // Minimal valid bplist00 dict: {"name": "Polytron 4K", "model": "ATV", "statusFlags": 516}
+        let mut buf = b"bplist00".to_vec();
+        let off0 = buf.len() as u8;
+        // 0: dict with 3 pairs -> k: 1,2,3 v: 4,5,6
+        buf.extend_from_slice(&[0xD3, 1, 2, 3, 4, 5, 6]);
+        let obj = |b: &mut Vec<u8>, tag: u8, s: &[u8]| -> u8 {
+            let o = b.len() as u8;
+            b.push(tag | (s.len() as u8));
+            b.extend_from_slice(s);
+            o
+        };
+        let off1 = obj(&mut buf, 0x50, b"name");
+        let off2 = obj(&mut buf, 0x50, b"model");
+        let off3 = obj(&mut buf, 0x50, b"statusFlags");
+        let off4 = obj(&mut buf, 0x50, b"Polytron 4K");
+        let off5 = obj(&mut buf, 0x50, b"ATV");
+        let off6 = buf.len() as u8;
+        buf.extend_from_slice(&[0x11, 0x02, 0x04]); // 516 big-endian 2 bytes
+
+        let table_off = buf.len() as u64;
+        buf.extend_from_slice(&[off0, off1, off2, off3, off4, off5, off6]);
+
+        let mut trailer = [0u8; 32];
+        trailer[6] = 1; // offset_int_size
+        trailer[7] = 1; // object_ref_size
+        trailer[8..16].copy_from_slice(&7u64.to_be_bytes());
+        trailer[16..24].copy_from_slice(&0u64.to_be_bytes());
+        trailer[24..32].copy_from_slice(&table_off.to_be_bytes());
+        buf.extend_from_slice(&trailer);
+
+        let dict = parse_bplist00_top_dict(&buf).expect("parse minimal bplist00");
+        assert_eq!(dict.get("name").map(String::as_str), Some("Polytron 4K"));
+        assert_eq!(dict.get("model").map(String::as_str), Some("ATV"));
+        assert_eq!(dict.get("statusFlags").map(String::as_str), Some("516"));
     }
 }

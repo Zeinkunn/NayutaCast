@@ -383,18 +383,44 @@ fn spawn_encoder_worker(
                     }
                 }
             };
+            let mut video_epoch: Option<Instant> = None;
+            let mut v_frames: u64 = 0;
+            let mut mp4_frags: u64 = 0;
             let _ = init_tx.send(Ok(()));
 
             while !stopped.load(Ordering::Relaxed) {
                 match rx.recv_timeout(Duration::from_millis(100)) {
                     Ok(EncoderMsg::Video(vf)) => {
+                        let elapsed = match video_epoch {
+                            Some(t0) => t0.elapsed(),
+                            None => {
+                                video_epoch = Some(Instant::now());
+                                Duration::ZERO
+                            }
+                        };
                         let raw = vf.as_video_frame();
-                        match muxer.push_video(&raw) {
-                            Ok(out) => rt.block_on(hub.sync_from_muxer(&muxer, out)),
+                        match muxer.push_video_at(&raw, elapsed) {
+                            Ok(out) => {
+                                v_frames += 1;
+                                if out.mp4_fragment.is_some() {
+                                    mp4_frags += 1;
+                                    if mp4_frags == 1 {
+                                        log::info!(
+                                            "UniversalLiveEncoder: first fMP4 fragment ready after {} frames ({:.2}s)",
+                                            v_frames,
+                                            elapsed.as_secs_f32()
+                                        );
+                                    }
+                                }
+                                rt.block_on(hub.sync_from_muxer(&muxer, out));
+                            }
                             Err(e) => log::warn!("LiveMuxer push_video error: {}", e),
                         }
                     }
                     Ok(EncoderMsg::Audio(af)) => {
+                        if video_epoch.is_none() {
+                            continue;
+                        }
                         let raw = AudioFrame {
                             sample_rate: af.sample_rate,
                             frames: af.frames,
@@ -408,6 +434,15 @@ fn spawn_encoder_worker(
                     Err(mpsc::RecvTimeoutError::Timeout) => continue,
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
+            }
+            if let Some(t0) = video_epoch {
+                let secs = t0.elapsed().as_secs_f32().max(0.001);
+                log::info!(
+                    "UniversalLiveEncoder stopped: {} video frames ({:.1} fps avg), {} fMP4 fragments",
+                    v_frames,
+                    v_frames as f32 / secs,
+                    mp4_frags
+                );
             }
         })?;
 
@@ -695,7 +730,7 @@ impl CastingSession {
             }
 
             // Initialize Smart TV Capture + Muxer + HTTP Stream Server pipeline
-            let (tx, rx) = mpsc::sync_channel::<EncoderMsg>(4);
+            let (tx, rx) = mpsc::sync_channel::<EncoderMsg>(16);
             *mux_tx_bg.lock() = Some(tx.clone());
             let mux_opts = LiveMuxerOptions {
                 width,

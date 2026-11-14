@@ -2,6 +2,7 @@ use std::{
     collections::VecDeque,
     ffi::{CString, c_int, c_void},
     ptr::null_mut,
+    time::Duration,
 };
 
 #[cfg(target_os = "linux")]
@@ -94,7 +95,46 @@ struct ContainerMuxer {
     io_state: *mut IoBufferState,
     video_stream_idx: c_int,
     audio_stream_idx: c_int,
+    video_annexb_header: Vec<u8>,
     header_written: bool,
+}
+
+fn extract_annexb_extradata(video_ctx: *const AVCodecContext) -> Vec<u8> {
+    if video_ctx.is_null() {
+        return Vec::new();
+    }
+    unsafe {
+        let ctx = &*video_ctx;
+        if ctx.extradata.is_null() || ctx.extradata_size <= 4 {
+            return Vec::new();
+        }
+        let slice = std::slice::from_raw_parts(ctx.extradata, ctx.extradata_size as usize);
+        if slice.starts_with(&[0, 0, 0, 1]) || slice.starts_with(&[0, 0, 1]) {
+            slice.to_vec()
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+fn packet_has_sps_nal(data: &[u8]) -> bool {
+    let scan_len = data.len().min(128);
+    let head = &data[..scan_len];
+    for i in 0..head.len().saturating_sub(4) {
+        if head[i] == 0 && head[i + 1] == 0 {
+            let nal_idx = if head[i + 2] == 1 {
+                i + 3
+            } else if i + 4 < head.len() && head[i + 2] == 0 && head[i + 3] == 1 {
+                i + 4
+            } else {
+                continue;
+            };
+            if nal_idx < head.len() && (head[nal_idx] & 0x1F) == 7 {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 impl ContainerMuxer {
@@ -174,6 +214,7 @@ impl ContainerMuxer {
                 io_state,
                 video_stream_idx: 0,
                 audio_stream_idx: 1,
+                video_annexb_header: Vec::new(),
                 header_written: false,
             };
             this.header_written = false;
@@ -215,6 +256,12 @@ impl ContainerMuxer {
             av_dict_free(&mut opts);
         }
 
+        let video_annexb_header = if format_name == "mpegts" {
+            extract_annexb_extradata(video_ctx)
+        } else {
+            Vec::new()
+        };
+
         let mut this = Self {
             format_name,
             fmt_ctx,
@@ -222,6 +269,7 @@ impl ContainerMuxer {
             io_state,
             video_stream_idx: unsafe { (*v_stream).index },
             audio_stream_idx: unsafe { (*a_stream).index },
+            video_annexb_header,
             header_written: hdr_rc >= 0,
         };
 
@@ -245,7 +293,56 @@ impl ContainerMuxer {
         src_tb: AVRational,
         is_video: bool,
     ) -> Result<Vec<u8>, LiveMuxerError> {
-        let cloned = unsafe { av_packet_clone(src_pkt) };
+        let needs_sps_prepend = is_video
+            && !self.video_annexb_header.is_empty()
+            && !src_pkt.is_null()
+            && unsafe {
+                ((*src_pkt).flags & AV_PKT_FLAG_KEY as i32) != 0
+                    && !(*src_pkt).data.is_null()
+                    && (*src_pkt).size > 0
+                    && !packet_has_sps_nal(std::slice::from_raw_parts(
+                        (*src_pkt).data,
+                        (*src_pkt).size as usize,
+                    ))
+            };
+
+        let cloned = if needs_sps_prepend {
+            unsafe {
+                let pkt = av_packet_alloc();
+                if pkt.is_null() {
+                    return Err(LiveMuxerError::Container {
+                        format: self.format_name,
+                        detail: "av_packet_alloc failed".into(),
+                    });
+                }
+                let src_len = (*src_pkt).size as usize;
+                let total_len = self.video_annexb_header.len() + src_len;
+                if av_new_packet(pkt, total_len as c_int) < 0 {
+                    let mut p = pkt;
+                    av_packet_free(&mut p);
+                    return Err(LiveMuxerError::Container {
+                        format: self.format_name,
+                        detail: "av_new_packet failed".into(),
+                    });
+                }
+                if av_packet_copy_props(pkt, src_pkt) < 0 {
+                    let mut p = pkt;
+                    av_packet_free(&mut p);
+                    return Err(LiveMuxerError::Container {
+                        format: self.format_name,
+                        detail: "av_packet_copy_props failed".into(),
+                    });
+                }
+                let dst = std::slice::from_raw_parts_mut((*pkt).data, total_len);
+                let h_len = self.video_annexb_header.len();
+                dst[..h_len].copy_from_slice(&self.video_annexb_header);
+                let src_slice = std::slice::from_raw_parts((*src_pkt).data, src_len);
+                dst[h_len..].copy_from_slice(src_slice);
+                pkt
+            }
+        } else {
+            unsafe { av_packet_clone(src_pkt) }
+        };
         if cloned.is_null() {
             return Err(LiveMuxerError::Container {
                 format: self.format_name,
@@ -339,6 +436,10 @@ pub struct UniversalLiveMuxer {
     v_sw_frame: *mut AVFrame,
     v_pkt: *mut AVPacket,
     v_frame_idx: i64,
+    v_last_pts: Option<i64>,
+    v_last_key_elapsed: Option<Duration>,
+    v_frames_since_key: i32,
+    v_gop_frames: i32,
     v_using_vaapi: bool,
     // Audio encoder
     a_ctx: *mut AVCodecContext,
@@ -357,6 +458,7 @@ pub struct UniversalLiveMuxer {
     // HLS state
     hls_cur_buf: Vec<u8>,
     hls_cur_video_frames: u64,
+    hls_seg_start_pts: i64,
     hls_next_seq: u64,
     hls_segments: VecDeque<(u64, f64, Vec<u8>)>,
     hls_playlist: String,
@@ -410,6 +512,7 @@ impl UniversalLiveMuxer {
         )?;
 
         let hls_playlist = Self::render_playlist(&VecDeque::new(), opts.fps);
+        let v_gop_frames = (opts.fps as i32 / 2).clamp(10, 15);
 
         Ok(Self {
             options: opts,
@@ -418,6 +521,10 @@ impl UniversalLiveMuxer {
             v_sw_frame,
             v_pkt,
             v_frame_idx: 0,
+            v_last_pts: None,
+            v_last_key_elapsed: None,
+            v_frames_since_key: 0,
+            v_gop_frames,
             v_using_vaapi,
             a_ctx,
             a_frame,
@@ -433,6 +540,7 @@ impl UniversalLiveMuxer {
             mpegts_gop_buf: ts_init.clone(),
             hls_cur_buf: ts_init,
             hls_cur_video_frames: 0,
+            hls_seg_start_pts: 0,
             hls_next_seq: 0,
             hls_segments: VecDeque::with_capacity(HLS_MAX_SEGMENTS + 1),
             hls_playlist,
@@ -443,12 +551,16 @@ impl UniversalLiveMuxer {
         opts: &LiveMuxerOptions,
     ) -> Result<(*mut AVCodecContext, *mut AVFrame, *mut AVFrame, bool), LiveMuxerError> {
         if cfg!(target_os = "linux") && opts.encoder_type == VideoEncoderType::Vaapi {
-            if let Ok(res) = Self::try_open_video_variant(opts, VideoEncoderType::Vaapi) {
-                return Ok(res);
+            for low_power in [true, false] {
+                if let Ok(res) =
+                    Self::try_open_video_variant(opts, VideoEncoderType::Vaapi, low_power)
+                {
+                    return Ok(res);
+                }
             }
             log::warn!("LiveMuxer VAAPI init failed; falling back to libx264");
         }
-        Self::try_open_video_variant(opts, VideoEncoderType::X264)
+        Self::try_open_video_variant(opts, VideoEncoderType::X264, false)
     }
 
     fn alloc_x264_codec(ctx: &mut *mut AVCodecContext) -> Result<*const AVCodec, LiveMuxerError> {
@@ -475,6 +587,7 @@ impl UniversalLiveMuxer {
     fn try_open_video_variant(
         opts: &LiveMuxerOptions,
         codec_kind: VideoEncoderType,
+        vaapi_low_power: bool,
     ) -> Result<(*mut AVCodecContext, *mut AVFrame, *mut AVFrame, bool), LiveMuxerError> {
         let mut ctx: *mut AVCodecContext = null_mut();
         #[cfg(target_os = "linux")]
@@ -507,7 +620,7 @@ impl UniversalLiveMuxer {
         ctx_mut.framerate = unsafe { av_make_q(opts.fps as i32, 1) };
         ctx_mut.time_base = unsafe { av_make_q(1, VIDEO_TIMEBASE_DEN) };
         ctx_mut.pkt_timebase = unsafe { av_make_q(1, VIDEO_TIMEBASE_DEN) };
-        ctx_mut.gop_size = (opts.fps as i32).max(15).min(30);
+        ctx_mut.gop_size = (opts.fps as i32 / 2).clamp(10, 15);
         ctx_mut.keyint_min = ctx_mut.gop_size;
         ctx_mut.max_b_frames = 0;
         ctx_mut.has_b_frames = 0;
@@ -520,7 +633,9 @@ impl UniversalLiveMuxer {
         };
 
         if using_vaapi {
-            set_option(ctx_mut, "low_power", 1);
+            if vaapi_low_power {
+                set_option(ctx_mut, "low_power", 1);
+            }
         } else {
             ctx_mut.thread_count = 4;
             ctx_mut.thread_type = FF_THREAD_SLICE as i32;
@@ -691,16 +806,52 @@ impl UniversalLiveMuxer {
         Ok(out)
     }
 
-    /// Pushes one video frame (NV12 or I420 SW), pads silence if audio lags
-    /// behind video PTS, and returns newly produced MPEG-TS / fMP4 outputs.
+    /// Pushes one video frame (NV12 or I420 SW) using synthetic nominal frame
+    /// pacing, pads silence if audio lags behind video PTS, and returns newly
+    /// produced MPEG-TS / fMP4 outputs.
     pub fn push_video(&mut self, frame: &VideoFrame) -> Result<MuxerOutput, LiveMuxerError> {
+        self.push_video_internal(frame, None)
+    }
+
+    /// Pushes one video frame timestamped by real elapsed wall-clock duration
+    /// since the first frame, preventing playback speed skew and A/V drift when
+    /// capture FPS is lower than the target `opts.fps`.
+    pub fn push_video_at(
+        &mut self,
+        frame: &VideoFrame,
+        elapsed: Duration,
+    ) -> Result<MuxerOutput, LiveMuxerError> {
+        self.push_video_internal(frame, Some(elapsed))
+    }
+
+    fn push_video_internal(
+        &mut self,
+        frame: &VideoFrame,
+        elapsed: Option<Duration>,
+    ) -> Result<MuxerOutput, LiveMuxerError> {
         if frame.sub_format != VideoSubFormat::SW || frame.data[0].is_null() {
             return Ok(MuxerOutput::default());
         }
 
+        let nominal_step = (VIDEO_TIMEBASE_DEN as i64) / (self.options.fps as i64).max(1);
+        let pts = match elapsed {
+            Some(el) => {
+                let raw = (el.as_secs_f64() * VIDEO_TIMEBASE_DEN as f64).round() as i64;
+                match self.v_last_pts {
+                    None => 0,
+                    Some(prev) => raw.max(prev + 1),
+                }
+            }
+            None => (self.v_frame_idx * VIDEO_TIMEBASE_DEN as i64) / (self.options.fps as i64),
+        };
+        let frame_delta = self
+            .v_last_pts
+            .map(|prev| (pts - prev).clamp(1, VIDEO_TIMEBASE_DEN as i64))
+            .unwrap_or(nominal_step);
+
         let mut out = MuxerOutput::default();
         let target_audio_samples =
-            (self.v_frame_idx * self.options.audio_sample_rate as i64) / (self.options.fps as i64);
+            (pts * self.options.audio_sample_rate as i64) / (VIDEO_TIMEBASE_DEN as i64);
         while self.a_samples_pts + (self.a_fifo_l.len() as i64) < target_audio_samples {
             let need = (target_audio_samples - self.a_samples_pts) as usize;
             let chunk = need.clamp(self.a_frame_size, self.a_frame_size * 2);
@@ -722,11 +873,28 @@ impl UniversalLiveMuxer {
 
         self.upload_video_frame(frame)?;
 
-        let pts = (self.v_frame_idx * VIDEO_TIMEBASE_DEN as i64) / (self.options.fps as i64);
+        let force_key = self.v_last_pts.is_none()
+            || self.v_frames_since_key >= self.v_gop_frames
+            || elapsed
+                .zip(self.v_last_key_elapsed)
+                .is_some_and(|(cur, prev)| cur.saturating_sub(prev) >= Duration::from_millis(500));
+
+        self.v_last_pts = Some(pts);
         self.v_frame_idx += 1;
+        if force_key {
+            self.v_frames_since_key = 1;
+            self.v_last_key_elapsed = elapsed;
+        } else {
+            self.v_frames_since_key += 1;
+        }
 
         unsafe {
             (*self.v_frame).pts = pts;
+            (*self.v_frame).pict_type = if force_key {
+                AVPictureType::AV_PICTURE_TYPE_I
+            } else {
+                AVPictureType::AV_PICTURE_TYPE_NONE
+            };
         }
 
         if unsafe { avcodec_send_frame(self.v_ctx, self.v_frame) } < 0 {
@@ -741,6 +909,11 @@ impl UniversalLiveMuxer {
                 break;
             }
             let is_key = unsafe { ((*self.v_pkt).flags & AV_PKT_FLAG_KEY as i32) != 0 };
+            unsafe {
+                if (*self.v_pkt).duration <= 0 {
+                    (*self.v_pkt).duration = frame_delta;
+                }
+            }
             let tb = unsafe { (*self.v_ctx).time_base };
             self.mux_packet(self.v_pkt, tb, true, is_key, &mut out)?;
             unsafe {
@@ -801,21 +974,28 @@ impl UniversalLiveMuxer {
     ) -> Result<(), LiveMuxerError> {
         // Rotate HLS segment cleanly on keyframe boundary after at least 1.0s
         // of video.
-        if is_video
-            && is_key
-            && self.hls_cur_video_frames >= self.options.fps as u64
-            && !self.hls_cur_buf.is_empty()
-        {
-            let seq = self.hls_next_seq;
-            self.hls_next_seq += 1;
-            let dur = (self.hls_cur_video_frames as f64) / (self.options.fps as f64);
-            let completed = std::mem::take(&mut self.hls_cur_buf);
-            self.hls_segments.push_back((seq, dur, completed));
-            while self.hls_segments.len() > HLS_MAX_SEGMENTS {
-                self.hls_segments.pop_front();
+        if is_video && is_key && !self.hls_cur_buf.is_empty() && self.hls_cur_video_frames > 0 {
+            let pkt_pts = unsafe { (*pkt).pts }.max(0);
+            let seg_ticks = pkt_pts.saturating_sub(self.hls_seg_start_pts);
+            if seg_ticks >= VIDEO_TIMEBASE_DEN as i64
+                || self.hls_cur_video_frames >= self.options.fps as u64
+            {
+                let seq = self.hls_next_seq;
+                self.hls_next_seq += 1;
+                let dur = if seg_ticks > 0 {
+                    (seg_ticks as f64) / (VIDEO_TIMEBASE_DEN as f64)
+                } else {
+                    (self.hls_cur_video_frames as f64) / (self.options.fps as f64)
+                };
+                let completed = std::mem::take(&mut self.hls_cur_buf);
+                self.hls_segments.push_back((seq, dur, completed));
+                while self.hls_segments.len() > HLS_MAX_SEGMENTS {
+                    self.hls_segments.pop_front();
+                }
+                self.hls_cur_video_frames = 0;
+                self.hls_seg_start_pts = pkt_pts;
+                self.hls_playlist = Self::render_playlist(&self.hls_segments, self.options.fps);
             }
-            self.hls_cur_video_frames = 0;
-            self.hls_playlist = Self::render_playlist(&self.hls_segments, self.options.fps);
         }
 
         let ts_bytes = self.ts_muxer.write_packet(pkt, tb, is_video)?;
@@ -1092,5 +1272,73 @@ mod tests {
         assert!(playlist.contains("seg_0.ts"), "playlist: {}", playlist);
         let seg0 = muxer.hls_segment("seg_0.ts").expect("seg_0.ts present");
         assert_eq!(seg0[0], 0x47);
+    }
+
+    #[test]
+    fn push_video_at_handles_slow_capture_and_emits_inline_sps_in_ts_segments() {
+        let mut muxer = UniversalLiveMuxer::new(LiveMuxerOptions {
+            width: 320,
+            height: 240,
+            fps: 60,
+            video_bitrate: 1_000_000,
+            audio_sample_rate: 48_000,
+            audio_bitrate: 128_000,
+            encoder_type: VideoEncoderType::X264,
+        })
+        .expect("init UniversalLiveMuxer");
+
+        let y = vec![100u8; 320 * 240];
+        let uv = vec![128u8; 320 * 120];
+        let vf = VideoFrame {
+            format: VideoFormat::NV12,
+            sub_format: VideoSubFormat::SW,
+            width: 320,
+            height: 240,
+            data: [
+                y.as_ptr() as *const c_void,
+                uv.as_ptr() as *const c_void,
+                std::ptr::null(),
+            ],
+            linesize: [320, 320, 0],
+        };
+
+        let mut first_moof_ms: Option<u64> = None;
+        // Simulate ~6.25 FPS capture (160ms/frame) over ~3.0s while configured for 60 fps.
+        for i in 0..20u64 {
+            let elapsed_ms = i * 160;
+            let out = muxer
+                .push_video_at(&vf, std::time::Duration::from_millis(elapsed_ms))
+                .expect("push_video_at");
+            if first_moof_ms.is_none()
+                && let Some(frag) = out.mp4_fragment
+                && frag.windows(4).any(|w| w == b"moof")
+            {
+                first_moof_ms = Some(elapsed_ms);
+            }
+        }
+
+        let moof_ms = first_moof_ms.expect("expected fMP4 moof fragment during slow capture");
+        assert!(
+            moof_ms <= 800,
+            "first moof fragment arrived too late at {}ms",
+            moof_ms
+        );
+
+        let seg0 = muxer
+            .hls_segment("seg_0.ts")
+            .expect("seg_0.ts should finalize after >=1s elapsed");
+        let seg1 = muxer
+            .hls_segment("seg_1.ts")
+            .expect("seg_1.ts should finalize after >=2s elapsed");
+        assert_eq!(seg0[0], 0x47);
+        assert_eq!(seg1[0], 0x47);
+        let seg1_has_sps = seg1.windows(5).any(|w| {
+            (w[0..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 7)
+                || (w[0..3] == [0, 0, 1] && (w[3] & 0x1F) == 7)
+        });
+        assert!(
+            seg1_has_sps,
+            "seg_1.ts must include inline Annex-B SPS NAL on segment keyframe"
+        );
     }
 }

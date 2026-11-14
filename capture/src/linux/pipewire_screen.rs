@@ -834,16 +834,131 @@ fn capture_grim_frame(output_name: Option<&str>) -> Option<(Vec<u8>, usize, usiz
     Some((rgb, w, h))
 }
 
-#[inline]
+#[inline(always)]
 fn rgb_to_y(r: i32, g: i32, b: i32) -> u8 {
     (((19595 * r + 38470 * g + 7471 * b + 32768) >> 16).clamp(0, 255)) as u8
 }
 
-#[inline]
+#[inline(always)]
 fn rgb_to_uv(r: i32, g: i32, b: i32) -> (u8, u8) {
     let u = ((((-11059 * r - 21709 * g + 32768 * b + 32768) >> 16) + 128).clamp(0, 255)) as u8;
     let v = ((((32768 * r - 27439 * g - 5329 * b + 32768) >> 16) + 128).clamp(0, 255)) as u8;
     (u, v)
+}
+
+fn packed_4byte_same_size<const BGRX: bool>(
+    src: &[u8],
+    w: usize,
+    h: usize,
+    stride: usize,
+    dst_y: &mut [u8],
+    dst_uv: &mut [u8],
+) {
+    let even_w = w & !1;
+    if even_w == 0 {
+        return;
+    }
+    let row_bytes = even_w * 4;
+    let max_h = h.min(dst_y.len() / w).min(src.len() / stride);
+
+    for dy in 0..max_h {
+        let src_row = &src[dy * stride..dy * stride + row_bytes];
+        let y_row = &mut dst_y[dy * w..dy * w + even_w];
+        let is_uv_row = (dy & 1) == 0 && ((dy >> 1) * w + even_w) <= dst_uv.len();
+
+        if is_uv_row {
+            let uv_off = (dy >> 1) * w;
+            let uv_row = &mut dst_uv[uv_off..uv_off + even_w];
+            for ((px2, y2), uv2) in src_row
+                .chunks_exact(8)
+                .zip(y_row.chunks_exact_mut(2))
+                .zip(uv_row.chunks_exact_mut(2))
+            {
+                let (r0, g0, b0, r1, g1, b1) = if BGRX {
+                    (
+                        px2[2] as i32,
+                        px2[1] as i32,
+                        px2[0] as i32,
+                        px2[6] as i32,
+                        px2[5] as i32,
+                        px2[4] as i32,
+                    )
+                } else {
+                    (
+                        px2[0] as i32,
+                        px2[1] as i32,
+                        px2[2] as i32,
+                        px2[4] as i32,
+                        px2[5] as i32,
+                        px2[6] as i32,
+                    )
+                };
+                y2[0] = (((19595 * r0 + 38470 * g0 + 7471 * b0 + 32768) >> 16).clamp(0, 255)) as u8;
+                y2[1] = (((19595 * r1 + 38470 * g1 + 7471 * b1 + 32768) >> 16).clamp(0, 255)) as u8;
+                uv2[0] = ((((-11059 * r0 - 21709 * g0 + 32768 * b0 + 32768) >> 16) + 128)
+                    .clamp(0, 255)) as u8;
+                uv2[1] = ((((32768 * r0 - 27439 * g0 - 5329 * b0 + 32768) >> 16) + 128)
+                    .clamp(0, 255)) as u8;
+            }
+        } else {
+            for (px, y_out) in src_row.chunks_exact(4).zip(y_row.iter_mut()) {
+                let (r, g, b) = if BGRX {
+                    (px[2] as i32, px[1] as i32, px[0] as i32)
+                } else {
+                    (px[0] as i32, px[1] as i32, px[2] as i32)
+                };
+                *y_out = (((19595 * r + 38470 * g + 7471 * b + 32768) >> 16).clamp(0, 255)) as u8;
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn packed_4byte_scaled<const BGRX: bool>(
+    src: &[u8],
+    src_w: usize,
+    src_h: usize,
+    stride: usize,
+    y_invert: bool,
+    dst_w: usize,
+    dst_h: usize,
+    dst_y: &mut [u8],
+    dst_uv: &mut [u8],
+) {
+    let x_ratio = (src_w << 16) / dst_w;
+    let y_ratio = (src_h << 16) / dst_h;
+
+    for dy in 0..dst_h {
+        let sy_raw = ((dy * y_ratio) >> 16).min(src_h - 1);
+        let sy = if y_invert { src_h - 1 - sy_raw } else { sy_raw };
+        let src_row = sy * stride;
+        let dst_row = dy * dst_w;
+        if dst_row + dst_w > dst_y.len() {
+            break;
+        }
+
+        for dx in 0..dst_w {
+            let sx = ((dx * x_ratio) >> 16).min(src_w - 1);
+            let px = src_row + sx * 4;
+            if px + 3 >= src.len() {
+                continue;
+            }
+            let (r, g, b) = if BGRX {
+                (src[px + 2] as i32, src[px + 1] as i32, src[px] as i32)
+            } else {
+                (src[px] as i32, src[px + 1] as i32, src[px + 2] as i32)
+            };
+            dst_y[dst_row + dx] = rgb_to_y(r, g, b);
+            if (dy & 1 == 0) && (dx & 1 == 0) {
+                let uv_idx = (dy >> 1) * dst_w + dx;
+                if uv_idx + 1 < dst_uv.len() {
+                    let (u, v) = rgb_to_uv(r, g, b);
+                    dst_uv[uv_idx] = u;
+                    dst_uv[uv_idx + 1] = v;
+                }
+            }
+        }
+    }
 }
 
 /// Converts packed 32-bit BGRX/BGRA/RGBX/RGBA buffers (arbitrary stride &
@@ -865,38 +980,25 @@ pub fn packed_4byte_to_nv12(
         return;
     }
     let stride = src_stride.max(src_w * 4);
-    let x_ratio = (src_w << 16) / dst_w;
-    let y_ratio = (src_h << 16) / dst_h;
-
-    for dy in 0..dst_h {
-        let sy_raw = ((dy * y_ratio) >> 16).min(src_h - 1);
-        let sy = if y_invert { src_h - 1 - sy_raw } else { sy_raw };
-        let src_row = sy * stride;
-        let dst_row = dy * dst_w;
-        if dst_row + dst_w > dst_y.len() {
-            break;
-        }
-
-        for dx in 0..dst_w {
-            let sx = ((dx * x_ratio) >> 16).min(src_w - 1);
-            let px = src_row + sx * 4;
-            if px + 3 >= src.len() {
-                continue;
+    if src_w == dst_w && src_h == dst_h && !y_invert {
+        match order {
+            PixelOrder::Bgrx => {
+                packed_4byte_same_size::<true>(src, dst_w, dst_h, stride, dst_y, dst_uv)
             }
-            let (r, g, b) = match order {
-                PixelOrder::Bgrx => (src[px + 2] as i32, src[px + 1] as i32, src[px] as i32),
-                PixelOrder::Rgbx => (src[px] as i32, src[px + 1] as i32, src[px + 2] as i32),
-            };
-            dst_y[dst_row + dx] = rgb_to_y(r, g, b);
-            if (dy & 1 == 0) && (dx & 1 == 0) {
-                let uv_idx = (dy >> 1) * dst_w + dx;
-                if uv_idx + 1 < dst_uv.len() {
-                    let (u, v) = rgb_to_uv(r, g, b);
-                    dst_uv[uv_idx] = u;
-                    dst_uv[uv_idx + 1] = v;
-                }
+            PixelOrder::Rgbx => {
+                packed_4byte_same_size::<false>(src, dst_w, dst_h, stride, dst_y, dst_uv)
             }
         }
+        return;
+    }
+
+    match order {
+        PixelOrder::Bgrx => packed_4byte_scaled::<true>(
+            src, src_w, src_h, stride, y_invert, dst_w, dst_h, dst_y, dst_uv,
+        ),
+        PixelOrder::Rgbx => packed_4byte_scaled::<false>(
+            src, src_w, src_h, stride, y_invert, dst_w, dst_h, dst_y, dst_uv,
+        ),
     }
 }
 
@@ -939,5 +1041,60 @@ pub fn rgb_to_nv12(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn packed_4byte_to_nv12_converts_bgrx_and_rgbx_1080p() {
+        let w = 1920usize;
+        let h = 1080usize;
+        // Pure red in BGRX = [0, 0, 255, 255] -> Y ~= 81, U ~= 90, V ~= 240
+        let mut bgrx = vec![0u8; w * h * 4];
+        for px in bgrx.as_chunks_mut::<4>().0 {
+            px[2] = 255;
+            px[3] = 255;
+        }
+        let mut y = vec![0u8; w * h];
+        let mut uv = vec![0u8; w * h / 2];
+
+        packed_4byte_to_nv12(
+            &bgrx,
+            w,
+            h,
+            w * 4,
+            PixelOrder::Bgrx,
+            false,
+            w,
+            h,
+            &mut y,
+            &mut uv,
+        );
+
+        // Pure red (255, 0, 0) -> full-range BT.601 Y ~= 76, U ~= 85, V ~= 255
+        assert!((74..=78).contains(&y[0]), "unexpected Y={}", y[0]);
+        assert!((82..=88).contains(&uv[0]), "unexpected U={}", uv[0]);
+        assert!((250..=255).contains(&uv[1]), "unexpected V={}", uv[1]);
+
+        let rgbx_row = [0u8, 255, 0, 255].repeat(4); // green 4x2
+        let rgbx = rgbx_row.repeat(2);
+        let mut gy = vec![0u8; 8];
+        let mut guv = vec![0u8; 4];
+        packed_4byte_to_nv12(
+            &rgbx,
+            4,
+            2,
+            16,
+            PixelOrder::Rgbx,
+            false,
+            4,
+            2,
+            &mut gy,
+            &mut guv,
+        );
+        assert!((147..=153).contains(&gy[0]), "unexpected green Y={}", gy[0]);
     }
 }

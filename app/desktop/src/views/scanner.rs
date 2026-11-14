@@ -1,10 +1,11 @@
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 
 use capture::DisplayMode;
 use egui::{Color32, FontId, Rect, Sense, Stroke, Ui, pos2, vec2};
 
 use crate::sdk::discovery::{CastProtocol, DeviceInfo, DeviceKind, DeviceManager};
+use crate::sdk::net_utils::{WifiDirectBeacon, WifiNetworkContext};
 use crate::theme::*;
 
 pub struct ScannerAction {
@@ -23,6 +24,8 @@ pub struct ScannerState {
     cached_scanning: bool,
     cached_wifi_up: bool,
     cached_lan_up: bool,
+    cached_wifi_ip: Option<Ipv4Addr>,
+    cached_wifi_ctx: WifiNetworkContext,
 }
 
 impl Default for ScannerState {
@@ -39,6 +42,8 @@ impl Default for ScannerState {
             cached_scanning: false,
             cached_wifi_up: true,
             cached_lan_up: false,
+            cached_wifi_ip: None,
+            cached_wifi_ctx: WifiNetworkContext::default(),
         }
     }
 }
@@ -57,7 +62,93 @@ impl ScannerState {
         if let Some(l) = device_mgr.has_active_interface_nonblocking(DeviceKind::Lan) {
             self.cached_lan_up = l;
         }
+        if let Some(ip) = device_mgr.active_interface_ip_nonblocking(DeviceKind::Wifi) {
+            self.cached_wifi_ip = Some(ip);
+        } else if !self.cached_wifi_up {
+            self.cached_wifi_ip = None;
+        }
+        if let Some(ctx) = device_mgr.wifi_context_nonblocking() {
+            self.cached_wifi_ctx = ctx;
+        } else if !self.cached_wifi_up {
+            self.cached_wifi_ctx.active_ssid = None;
+        }
     }
+}
+
+fn format_wifi_direct_summary(beacons: &[WifiDirectBeacon]) -> String {
+    let mut parts: Vec<String> = beacons
+        .iter()
+        .take(2)
+        .map(|b| {
+            let mut meta = Vec::new();
+            if let Some(sig) = b.signal {
+                meta.push(format!("{sig}%"));
+            }
+            if let Some(ch) = b.channel {
+                meta.push(format!("ch {ch}"));
+            }
+            if meta.is_empty() {
+                b.ssid.clone()
+            } else {
+                format!("{} ({})", b.ssid, meta.join(", "))
+            }
+        })
+        .collect();
+    if beacons.len() > 2 {
+        parts.push(format!("+{}", beacons.len() - 2));
+    }
+    parts.join(", ")
+}
+
+fn draw_wifi_direct_notice(
+    ui: &mut Ui,
+    col_width: f32,
+    active_ssid: Option<&str>,
+    beacons: &[WifiDirectBeacon],
+) {
+    let summary = format_wifi_direct_summary(beacons);
+    let title = format!("Wi-Fi Direct TV terdeteksi: {summary}");
+    let line2 = match active_ssid {
+        Some(ssid) => {
+            format!("Hubungkan TV ke Wi-Fi \"{ssid}\" untuk AirPlay / Google Cast / DLNA,")
+        }
+        None => "Hubungkan TV & laptop ke Wi-Fi yang sama untuk AirPlay / Cast / DLNA,".to_string(),
+    };
+    let line3 = "atau klik Tambahkan IP jika TV memakai IP berbeda.";
+
+    let banner_h = 58.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(col_width, banner_h), Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect(
+        rect,
+        10.0,
+        Color32::from_rgb(255, 251, 235),
+        Stroke::new(1.0, Color32::from_rgb(253, 230, 138)),
+        egui::StrokeKind::Inside,
+    );
+
+    let x = rect.min.x + 12.0;
+    painter.text(
+        pos2(x, rect.min.y + 14.0),
+        egui::Align2::LEFT_CENTER,
+        title,
+        FontId::proportional(11.8),
+        Color32::from_rgb(146, 64, 14),
+    );
+    painter.text(
+        pos2(x, rect.min.y + 32.0),
+        egui::Align2::LEFT_CENTER,
+        line2,
+        FontId::proportional(11.0),
+        Color32::from_rgb(120, 53, 15),
+    );
+    painter.text(
+        pos2(x, rect.min.y + 46.0),
+        egui::Align2::LEFT_CENTER,
+        line3,
+        FontId::proportional(11.0),
+        Color32::from_rgb(120, 53, 15),
+    );
 }
 
 fn draw_segmented_actions(
@@ -290,7 +381,36 @@ pub fn render_scanner(
             if !wifi_active { TEXT_MAIN } else { TEXT_MUTED },
         );
 
-        ui.add_space(16.0);
+        let show_wifi_direct_notice =
+            wifi_active && !state.cached_wifi_ctx.wifi_direct_tvs.is_empty();
+
+        if wifi_active {
+            let wifi_status = match (
+                state.cached_wifi_ctx.active_ssid.as_deref(),
+                state.cached_wifi_ip,
+            ) {
+                (Some(ssid), Some(ip)) => Some(format!("Wi-Fi aktif: {ssid} · {ip}")),
+                (Some(ssid), None) => Some(format!("Wi-Fi aktif: {ssid}")),
+                (None, Some(ip)) => Some(format!("Wi-Fi IP: {ip}")),
+                (None, None) => None,
+            };
+            if let Some(status) = wifi_status {
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(status).size(11.5).color(TEXT_MUTED));
+            }
+            if show_wifi_direct_notice {
+                ui.add_space(6.0);
+                draw_wifi_direct_notice(
+                    ui,
+                    col_width,
+                    state.cached_wifi_ctx.active_ssid.as_deref(),
+                    &state.cached_wifi_ctx.wifi_direct_tvs,
+                );
+            }
+            ui.add_space(10.0);
+        } else {
+            ui.add_space(16.0);
+        }
 
         // 3. Device List
         let devices = state.cached_devices.clone();
@@ -380,8 +500,13 @@ pub fn render_scanner(
             ui.add_space(18.0);
             draw_segmented_actions(ui, 36.0, state, device_mgr, rt);
         } else {
+            let list_max_h = if show_wifi_direct_notice {
+                155.0
+            } else {
+                215.0
+            };
             egui::ScrollArea::vertical()
-                .max_height(215.0)
+                .max_height(list_max_h)
                 .show(ui, |ui| {
                     for device in &devices {
                         let ip_str = device.ip.to_string();

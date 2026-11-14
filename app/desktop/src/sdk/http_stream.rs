@@ -31,15 +31,16 @@ pub struct StreamHub {
     open_stream_clients: AtomicUsize,
     last_hls_activity_ms: AtomicU64,
     bytes_served: AtomicU64,
+    mp4_frag_seq: AtomicU64,
     stopped: AtomicBool,
     mpegts_gop_prefix: RwLock<Vec<u8>>,
     fmp4_init: RwLock<Vec<u8>>,
-    fmp4_latest_frag: RwLock<Option<Vec<u8>>>,
+    fmp4_latest_frag: RwLock<Option<(u64, Vec<u8>)>>,
     hls_playlist: RwLock<String>,
     hls_segments: RwLock<HashMap<String, Vec<u8>>>,
     hls_order: RwLock<VecDeque<String>>,
     ts_tx: broadcast::Sender<Vec<u8>>,
-    mp4_tx: broadcast::Sender<Vec<u8>>,
+    mp4_tx: broadcast::Sender<(u64, Vec<u8>)>,
 }
 
 impl StreamHub {
@@ -50,6 +51,7 @@ impl StreamHub {
             open_stream_clients: AtomicUsize::new(0),
             last_hls_activity_ms: AtomicU64::new(0),
             bytes_served: AtomicU64::new(0),
+            mp4_frag_seq: AtomicU64::new(0),
             stopped: AtomicBool::new(false),
             mpegts_gop_prefix: RwLock::new(Vec::new()),
             fmp4_init: RwLock::new(Vec::new()),
@@ -89,8 +91,9 @@ impl StreamHub {
             *self.mpegts_gop_prefix.write().await = muxer.mpegts_gop_prefix().to_vec();
         }
         if let Some(frag) = out.mp4_fragment {
-            *self.fmp4_latest_frag.write().await = Some(frag.clone());
-            let _ = self.mp4_tx.send(frag);
+            let seq = self.mp4_frag_seq.fetch_add(1, Ordering::SeqCst) + 1;
+            *self.fmp4_latest_frag.write().await = Some((seq, frag.clone()));
+            let _ = self.mp4_tx.send((seq, frag));
         }
         for chunk in out.mpegts_chunks {
             let _ = self.ts_tx.send(chunk);
@@ -130,9 +133,10 @@ impl StreamHub {
     ) {
         *self.mpegts_gop_prefix.write().await = ts_data.clone();
         *self.fmp4_init.write().await = mp4_init;
-        *self.fmp4_latest_frag.write().await = Some(mp4_frag.clone());
+        let seq = self.mp4_frag_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        *self.fmp4_latest_frag.write().await = Some((seq, mp4_frag.clone()));
         let _ = self.ts_tx.send(ts_data);
-        let _ = self.mp4_tx.send(mp4_frag);
+        let _ = self.mp4_tx.send((seq, mp4_frag));
     }
 }
 
@@ -159,10 +163,35 @@ pub struct HttpStreamServer {
     handle: Option<tokio::task::JoinHandle<()>>,
 }
 
+async fn bind_preferred_http_listener(bind_ip: Ipv4Addr) -> anyhow::Result<TcpListener> {
+    if let Ok(raw) = std::env::var("NAYUTACAST_HTTP_PORT")
+        && let Ok(port) = raw.trim().parse::<u16>()
+        && port > 0
+        && let Ok(listener) = TcpListener::bind(SocketAddr::from((bind_ip, port))).await
+    {
+        return Ok(listener);
+    }
+
+    if !bind_ip.is_loopback() {
+        for port in 19080..=19085 {
+            if let Ok(listener) = TcpListener::bind(SocketAddr::from((bind_ip, port))).await {
+                return Ok(listener);
+            }
+        }
+    }
+
+    Ok(TcpListener::bind(SocketAddr::from((bind_ip, 0))).await?)
+}
+
 impl HttpStreamServer {
     pub async fn start(bind_ip: Ipv4Addr, hub: Arc<StreamHub>) -> anyhow::Result<Self> {
-        let listener = TcpListener::bind(SocketAddr::from((bind_ip, 0))).await?;
+        let listener = bind_preferred_http_listener(bind_ip).await?;
         let port = listener.local_addr()?.port();
+        log::info!(
+            "HttpStreamServer listening on http://{}:{} (watch: /watch)",
+            bind_ip,
+            port
+        );
         let hub_srv = hub.clone();
 
         let handle = tokio::spawn(async move {
@@ -170,12 +199,14 @@ impl HttpStreamServer {
                 if hub_srv.stopped.load(Ordering::SeqCst) {
                     break;
                 }
-                let Ok((stream, _peer)) = listener.accept().await else {
+                let Ok((stream, peer)) = listener.accept().await else {
                     break;
                 };
                 let hub_conn = hub_srv.clone();
                 tokio::spawn(async move {
-                    let _ = handle_client(stream, hub_conn).await;
+                    if let Err(e) = handle_client(stream, peer, hub_conn).await {
+                        log::debug!("HTTP client {} disconnected: {}", peer, e);
+                    }
                 });
             }
         });
@@ -201,7 +232,11 @@ impl Drop for HttpStreamServer {
     }
 }
 
-async fn handle_client(stream: TcpStream, hub: Arc<StreamHub>) -> anyhow::Result<()> {
+async fn handle_client(
+    stream: TcpStream,
+    peer: SocketAddr,
+    hub: Arc<StreamHub>,
+) -> anyhow::Result<()> {
     let _ = stream.set_nodelay(true);
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
@@ -213,7 +248,8 @@ async fn handle_client(stream: TcpStream, hub: Arc<StreamHub>) -> anyhow::Result
         return Ok(());
     }
 
-    // Drain remaining request headers until blank line.
+    // Parse relevant headers and drain until blank line.
+    let mut range_hdr: Option<String> = None;
     loop {
         let mut line = String::new();
         let len =
@@ -221,12 +257,27 @@ async fn handle_client(stream: TcpStream, hub: Arc<StreamHub>) -> anyhow::Result
         if len == 0 || line == "\r\n" || line == "\n" {
             break;
         }
+        if let Some((k, v)) = line.split_once(':')
+            && k.trim().eq_ignore_ascii_case("range")
+        {
+            range_hdr = Some(v.trim().to_string());
+        }
     }
 
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("GET");
     let raw_target = parts.next().unwrap_or("/");
     let path = raw_target.split('?').next().unwrap_or("/");
+    log::info!(
+        "HTTP stream request from {}: {} {}{}",
+        peer.ip(),
+        method,
+        path,
+        range_hdr
+            .as_deref()
+            .map(|r| format!(" (Range: {})", r))
+            .unwrap_or_default()
+    );
 
     if method.eq_ignore_ascii_case("OPTIONS") {
         write_half
@@ -317,30 +368,52 @@ async fn handle_client(stream: TcpStream, hub: Arc<StreamHub>) -> anyhow::Result
             }
 
             let _guard = ClientGuard::new(hub.clone());
-            let mut rx = hub.mp4_tx.subscribe();
 
-            for _ in 0..25 {
-                if !hub.fmp4_init.read().await.is_empty() || hub.stopped.load(Ordering::SeqCst) {
+            // Wait until both ftyp+moov init AND at least one keyframe-aligned
+            // moof fragment are ready before flushing response headers/body, so
+            // receivers never stall in LOADING after receiving only header bytes.
+            for _ in 0..70 {
+                if hub.stopped.load(Ordering::SeqCst)
+                    || (!hub.fmp4_init.read().await.is_empty()
+                        && hub.fmp4_latest_frag.read().await.is_some())
+                {
                     break;
                 }
-                tokio::time::sleep(Duration::from_millis(80)).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
             }
 
+            let mut rx = hub.mp4_tx.subscribe();
             let init = hub.fmp4_init.read().await.clone();
             if !init.is_empty() {
                 write_half.write_all(&init).await?;
                 hub.bytes_served
                     .fetch_add(init.len() as u64, Ordering::Relaxed);
             }
-            if let Some(frag) = hub.fmp4_latest_frag.read().await.clone() {
+            let mut sent_seq = 0u64;
+            let mut init_frag_len = 0usize;
+            if let Some((seq, frag)) = hub.fmp4_latest_frag.read().await.clone() {
+                init_frag_len = frag.len();
                 write_half.write_all(&frag).await?;
                 hub.bytes_served
                     .fetch_add(frag.len() as u64, Ordering::Relaxed);
+                sent_seq = seq;
             }
+            let _ = write_half.flush().await;
+            log::info!(
+                "HTTP /live.mp4 streaming started to {} (init={}B, initial_frag_seq={} ({}B))",
+                peer.ip(),
+                init.len(),
+                sent_seq,
+                init_frag_len
+            );
 
             while !hub.stopped.load(Ordering::SeqCst) {
                 match rx.recv().await {
-                    Ok(frag) => {
+                    Ok((seq, frag)) => {
+                        if seq <= sent_seq {
+                            continue;
+                        }
+                        sent_seq = seq;
                         if write_half.write_all(&frag).await.is_err() {
                             break;
                         }
@@ -354,7 +427,7 @@ async fn handle_client(stream: TcpStream, hub: Arc<StreamHub>) -> anyhow::Result
         }
         "/live.m3u8" => {
             hub.last_hls_activity_ms.store(now_ms(), Ordering::SeqCst);
-            for _ in 0..20 {
+            for _ in 0..30 {
                 if !hub.hls_segments.read().await.is_empty() || hub.stopped.load(Ordering::SeqCst) {
                     break;
                 }
@@ -381,20 +454,61 @@ async fn handle_client(stream: TcpStream, hub: Arc<StreamHub>) -> anyhow::Result
             hub.last_hls_activity_ms.store(now_ms(), Ordering::SeqCst);
             let seg_name = p.trim_start_matches('/');
             if let Some(data) = hub.hls_segments.read().await.get(seg_name).cloned() {
-                let hdr = format!(
-                    "HTTP/1.1 200 OK\r\n\
-                     Content-Type: video/mp2t\r\n\
-                     Content-Length: {}\r\n\
-                     Access-Control-Allow-Origin: *\r\n\
-                     Cache-Control: no-cache\r\n\
-                     Connection: close\r\n\r\n",
-                    data.len()
-                );
-                write_half.write_all(hdr.as_bytes()).await?;
-                if !is_head {
-                    write_half.write_all(&data).await?;
-                    hub.bytes_served
-                        .fetch_add(data.len() as u64, Ordering::Relaxed);
+                let total = data.len();
+                let parsed_range = range_hdr.as_deref().and_then(|r| {
+                    let spec = r.strip_prefix("bytes=")?;
+                    let (s_str, e_str) = spec.split_once('-')?;
+                    let start = s_str.trim().parse::<usize>().ok()?;
+                    let end = if e_str.trim().is_empty() {
+                        total.checked_sub(1)?
+                    } else {
+                        e_str
+                            .trim()
+                            .parse::<usize>()
+                            .ok()?
+                            .min(total.checked_sub(1)?)
+                    };
+                    (start <= end && start < total).then_some((start, end))
+                });
+
+                if let Some((start, end)) = parsed_range {
+                    let slice = &data[start..=end];
+                    let hdr = format!(
+                        "HTTP/1.1 206 Partial Content\r\n\
+                         Content-Type: video/mp2t\r\n\
+                         Accept-Ranges: bytes\r\n\
+                         Content-Range: bytes {}-{}/{}\r\n\
+                         Content-Length: {}\r\n\
+                         Access-Control-Allow-Origin: *\r\n\
+                         Cache-Control: no-cache\r\n\
+                         Connection: close\r\n\r\n",
+                        start,
+                        end,
+                        total,
+                        slice.len()
+                    );
+                    write_half.write_all(hdr.as_bytes()).await?;
+                    if !is_head {
+                        write_half.write_all(slice).await?;
+                        hub.bytes_served
+                            .fetch_add(slice.len() as u64, Ordering::Relaxed);
+                    }
+                } else {
+                    let hdr = format!(
+                        "HTTP/1.1 200 OK\r\n\
+                         Content-Type: video/mp2t\r\n\
+                         Accept-Ranges: bytes\r\n\
+                         Content-Length: {}\r\n\
+                         Access-Control-Allow-Origin: *\r\n\
+                         Cache-Control: no-cache\r\n\
+                         Connection: close\r\n\r\n",
+                        total
+                    );
+                    write_half.write_all(hdr.as_bytes()).await?;
+                    if !is_head {
+                        write_half.write_all(&data).await?;
+                        hub.bytes_served.fetch_add(total as u64, Ordering::Relaxed);
+                    }
                 }
             } else {
                 write_half

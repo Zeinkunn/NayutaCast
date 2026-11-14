@@ -32,6 +32,7 @@ base64 = "0.22"
 prost = "0.14"
 roxmltree = "0.21"
 if-addrs = "0.15"
+socket2 = "0.6"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pki-types = "1"
 futures-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }

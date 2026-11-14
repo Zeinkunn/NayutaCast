@@ -177,6 +177,11 @@ impl GoogleCastSession {
         )
         .await??;
         let mut tls = FuturesAsyncReadCompatExt::compat(tls_futures);
+        log::info!(
+            "Google Cast TLS connected to {} ({})",
+            ctx.device.name,
+            addr
+        );
 
         let req_seq = AtomicU64::new(1);
 
@@ -190,17 +195,15 @@ impl GoogleCastSession {
         )
         .await?;
 
-        // 2. Launch Default Media Receiver (CC1AD845)
-        let launch_id = req_seq.fetch_add(1, Ordering::Relaxed);
+        // Query current receiver status first so an already-running
+        // Default Media Receiver (CC1AD845) can be reused without relaunching.
+        let status_id = req_seq.fetch_add(1, Ordering::Relaxed);
         write_cast_msg(
             &mut tls,
             "sender-0",
             "receiver-0",
             "urn:x-cast:com.google.cast.receiver",
-            format!(
-                r#"{{"type":"LAUNCH","appId":"CC1AD845","requestId":{}}}"#,
-                launch_id
-            ),
+            format!(r#"{{"type":"GET_STATUS","requestId":{}}}"#, status_id),
         )
         .await?;
 
@@ -212,44 +215,142 @@ impl GoogleCastSession {
 
         let mut transport_id: Option<String> = None;
         let mut session_id: Option<String> = None;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
 
-        while tokio::time::Instant::now() < deadline && transport_id.is_none() {
-            let remain = deadline.saturating_duration_since(tokio::time::Instant::now());
-            let Ok(Ok(msg)) = tokio::time::timeout(remain, read_cast_msg(&mut tls)).await else {
-                break;
-            };
-            if msg.namespace == "urn:x-cast:com.google.cast.tp.heartbeat" {
-                let _ = write_cast_msg(
-                    &mut tls,
-                    "sender-0",
-                    "receiver-0",
-                    "urn:x-cast:com.google.cast.tp.heartbeat",
-                    r#"{"type":"PONG"}"#.to_string(),
-                )
-                .await;
-                continue;
+        // Check quick GET_STATUS response (~800ms) before issuing LAUNCH.
+        let pre_deadline = tokio::time::Instant::now() + Duration::from_millis(800);
+        while tokio::time::Instant::now() < pre_deadline && transport_id.is_none() {
+            let remain = pre_deadline.saturating_duration_since(tokio::time::Instant::now());
+            match tokio::time::timeout(remain, read_cast_msg(&mut tls)).await {
+                Ok(Ok(msg)) => {
+                    if msg.namespace == "urn:x-cast:com.google.cast.tp.heartbeat" {
+                        let _ = write_cast_msg(
+                            &mut tls,
+                            "sender-0",
+                            "receiver-0",
+                            "urn:x-cast:com.google.cast.tp.heartbeat",
+                            r#"{"type":"PONG"}"#.to_string(),
+                        )
+                        .await;
+                        continue;
+                    }
+                    if let Some(payload) = msg.payload_utf8
+                        && let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload)
+                    {
+                        log::debug!(
+                            "Google Cast pre-launch msg [{}]: {}",
+                            msg.namespace,
+                            payload
+                        );
+                        if val.get("type").and_then(|v| v.as_str()) == Some("RECEIVER_STATUS") {
+                            if let Some(apps) = val
+                                .get("status")
+                                .and_then(|s| s.get("applications"))
+                                .and_then(|a| a.as_array())
+                                && let Some(app) = apps.iter().find(|a| {
+                                    a.get("appId").and_then(|v| v.as_str()) == Some("CC1AD845")
+                                })
+                            {
+                                transport_id = app
+                                    .get("transportId")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string());
+                                session_id = app
+                                    .get("sessionId")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string());
+                            }
+                            if val.get("requestId").and_then(|v| v.as_u64()) == Some(status_id) {
+                                break;
+                            }
+                        }
+                    }
+                }
+                Ok(Err(e)) => {
+                    anyhow::bail!("Google Cast connection closed during GET_STATUS: {}", e);
+                }
+                Err(_) => break,
             }
-            if let Some(payload) = msg.payload_utf8
-                && let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload)
-                && val.get("type").and_then(|v| v.as_str()) == Some("RECEIVER_STATUS")
-                && let Some(apps) = val
-                    .get("status")
-                    .and_then(|s| s.get("applications"))
-                    .and_then(|a| a.as_array())
-                && let Some(app) = apps
-                    .iter()
-                    .find(|a| a.get("appId").and_then(|v| v.as_str()) == Some("CC1AD845"))
-                    .or_else(|| apps.first())
-            {
-                transport_id = app
-                    .get("transportId")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                session_id = app
-                    .get("sessionId")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
+        }
+
+        if transport_id.is_none() {
+            // 2. Launch Default Media Receiver (CC1AD845)
+            let launch_id = req_seq.fetch_add(1, Ordering::Relaxed);
+            log::info!("Sending Google Cast LAUNCH CC1AD845 to {}", ctx.device.name);
+            write_cast_msg(
+                &mut tls,
+                "sender-0",
+                "receiver-0",
+                "urn:x-cast:com.google.cast.receiver",
+                format!(
+                    r#"{{"type":"LAUNCH","appId":"CC1AD845","requestId":{}}}"#,
+                    launch_id
+                ),
+            )
+            .await?;
+
+            // Android TV cold-boot of WebView/Default Media Receiver can take >10s.
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+
+            while tokio::time::Instant::now() < deadline && transport_id.is_none() {
+                let remain = deadline.saturating_duration_since(tokio::time::Instant::now());
+                let msg = match tokio::time::timeout(remain, read_cast_msg(&mut tls)).await {
+                    Ok(Ok(m)) => m,
+                    Ok(Err(e)) => {
+                        log::warn!("Google Cast read error while waiting LAUNCH: {}", e);
+                        break;
+                    }
+                    Err(_) => {
+                        log::warn!("Google Cast LAUNCH deadline (20s) expired");
+                        break;
+                    }
+                };
+                if msg.namespace == "urn:x-cast:com.google.cast.tp.heartbeat" {
+                    let _ = write_cast_msg(
+                        &mut tls,
+                        "sender-0",
+                        "receiver-0",
+                        "urn:x-cast:com.google.cast.tp.heartbeat",
+                        r#"{"type":"PONG"}"#.to_string(),
+                    )
+                    .await;
+                    continue;
+                }
+                if let Some(payload) = msg.payload_utf8
+                    && let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload)
+                {
+                    log::debug!("Google Cast launch msg [{}]: {}", msg.namespace, payload);
+                    let msg_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    if msg_type == "LAUNCH_ERROR" {
+                        let reason = val
+                            .get("reason")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+                        anyhow::bail!(
+                            "Google Cast device {} menolak meluncurkan receiver ({})",
+                            ctx.device.name,
+                            reason
+                        );
+                    }
+                    if msg_type == "RECEIVER_STATUS"
+                        && let Some(apps) = val
+                            .get("status")
+                            .and_then(|s| s.get("applications"))
+                            .and_then(|a| a.as_array())
+                        && let Some(app) = apps
+                            .iter()
+                            .find(|a| a.get("appId").and_then(|v| v.as_str()) == Some("CC1AD845"))
+                            .or_else(|| apps.first())
+                    {
+                        transport_id = app
+                            .get("transportId")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        session_id = app
+                            .get("sessionId")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                    }
+                }
             }
         }
 
@@ -260,6 +361,12 @@ impl GoogleCastSession {
             )
         })?;
         let session_id = session_id.unwrap_or_default();
+        log::info!(
+            "Google Cast receiver ready on {} (transportId={}, sessionId={})",
+            ctx.device.name,
+            transport_id,
+            session_id
+        );
 
         // 3. Connect virtual transport channel
         write_cast_msg(
@@ -284,25 +391,45 @@ impl GoogleCastSession {
         ];
 
         let mut loaded_ok = false;
-        let mut last_err = String::from("Cast LOAD timeout");
+        let mut last_err = format!(
+            "Google Cast TV tidak dapat mengakses stream HTTP {}:{} (periksa firewall lokal)",
+            ctx.lan_ip, ctx.http_port
+        );
 
         for (media_url, mime) in candidates {
+            let start_bytes = ctx.hub.bytes_served();
             let req_id = req_seq.fetch_add(1, Ordering::Relaxed);
+            log::info!(
+                "Sending Google Cast LOAD to {}: {} ({})",
+                ctx.device.name,
+                media_url,
+                mime
+            );
+            let mut media_obj = serde_json::json!({
+                "contentId": media_url,
+                "contentType": mime,
+                "streamType": "LIVE",
+                "metadata": {
+                    "metadataType": 0,
+                    "title": "NayutaCast Live Screen"
+                }
+            });
+            if mime == "application/x-mpegurl"
+                && let Some(obj) = media_obj.as_object_mut()
+            {
+                obj.insert("hlsSegmentFormat".into(), serde_json::json!("TS"));
+                obj.insert(
+                    "hlsVideoSegmentFormat".into(),
+                    serde_json::json!("MPEG2_TS"),
+                );
+            }
             let load_json = serde_json::json!({
                 "type": "LOAD",
                 "requestId": req_id,
                 "sessionId": session_id,
                 "autoplay": true,
                 "currentTime": 0,
-                "media": {
-                    "contentId": media_url,
-                    "contentType": mime,
-                    "streamType": "LIVE",
-                    "metadata": {
-                        "metadataType": 0,
-                        "title": "NayutaCast Live Screen"
-                    }
-                }
+                "media": media_obj
             })
             .to_string();
 
@@ -315,9 +442,20 @@ impl GoogleCastSession {
             )
             .await?;
 
-            let load_deadline = tokio::time::Instant::now() + Duration::from_secs(7);
+            let load_started = tokio::time::Instant::now();
+            let load_deadline = load_started + Duration::from_secs(9);
+            let mut saw_buffering = false;
             while tokio::time::Instant::now() < load_deadline {
-                if ctx.hub.active_clients() > 0 && ctx.hub.bytes_served() > 0 {
+                if saw_buffering
+                    && load_started.elapsed() >= Duration::from_secs(3)
+                    && ctx.hub.active_clients() > 0
+                    && ctx.hub.bytes_served() >= start_bytes + 4096
+                {
+                    log::info!(
+                        "Google Cast confirmed playback via BUFFERING + active transfer ({} bytes) for {}",
+                        ctx.hub.bytes_served().saturating_sub(start_bytes),
+                        mime
+                    );
                     loaded_ok = true;
                     break;
                 }
@@ -339,6 +477,7 @@ impl GoogleCastSession {
                     if let Some(payload) = msg.payload_utf8
                         && let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload)
                     {
+                        log::debug!("Google Cast media msg [{}]: {}", msg.namespace, payload);
                         match val.get("type").and_then(|t| t.as_str()) {
                             Some("MEDIA_STATUS") => {
                                 if let Some(arr) = val.get("status").and_then(|s| s.as_array())
@@ -348,14 +487,36 @@ impl GoogleCastSession {
                                         .get("playerState")
                                         .and_then(|s| s.as_str())
                                         .unwrap_or("");
-                                    if matches!(ps, "PLAYING" | "BUFFERING") {
+                                    let idle_reason = first
+                                        .get("idleReason")
+                                        .and_then(|s| s.as_str())
+                                        .unwrap_or("");
+                                    log::info!(
+                                        "Google Cast MEDIA_STATUS during LOAD ({}): playerState={}, idleReason={}",
+                                        mime,
+                                        ps,
+                                        idle_reason
+                                    );
+                                    if ps == "PLAYING" {
                                         loaded_ok = true;
+                                        break;
+                                    }
+                                    if ps == "BUFFERING" {
+                                        saw_buffering = true;
+                                    }
+                                    if ps == "IDLE" && idle_reason == "ERROR" {
+                                        last_err = format!(
+                                            "Cast player returned IDLE/ERROR for {} ({})",
+                                            mime, payload
+                                        );
+                                        log::warn!("{}", last_err);
                                         break;
                                     }
                                 }
                             }
                             Some("LOAD_FAILED") | Some("INVALID_REQUEST") => {
                                 last_err = format!("Cast {} ({})", payload, mime);
+                                log::warn!("Google Cast LOAD error: {}", last_err);
                                 break;
                             }
                             _ => {}
@@ -363,7 +524,29 @@ impl GoogleCastSession {
                     }
                 }
             }
+            if !loaded_ok
+                && last_err.is_empty()
+                && ((saw_buffering
+                    && ctx.hub.active_clients() > 0
+                    && ctx.hub.bytes_served() > start_bytes)
+                    || (ctx.hub.active_clients() > 0
+                        && ctx.hub.bytes_served() >= start_bytes + 65_536))
+            {
+                log::info!(
+                    "Google Cast confirmed playback via sustained HTTP transfer ({} bytes, buffering={}) for {}",
+                    ctx.hub.bytes_served().saturating_sub(start_bytes),
+                    saw_buffering,
+                    mime
+                );
+                loaded_ok = true;
+            }
             if loaded_ok {
+                log::info!(
+                    "Google Cast Connected to {} using {} (bytes_served={})",
+                    ctx.device.name,
+                    mime,
+                    ctx.hub.bytes_served()
+                );
                 break;
             }
         }

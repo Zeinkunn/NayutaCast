@@ -32,3 +32,9 @@ codec = { path = "codec", version = "0.3.1", package = "nayutacast-codec" }
 resample = { path = "resample", version = "0.3.1", package = "nayutacast-resample" }
 common = { path = "common", version = "0.3.1", package = "nayutacast-common" }
 nayutacast = { path = "nayutacast", version = "0.4.0", package = "nayutacast" }
+
+[profile.dev.package.nayutacast-capture]
+opt-level = 2
+
+[profile.dev.package.nayutacast-codec]
+opt-level = 2

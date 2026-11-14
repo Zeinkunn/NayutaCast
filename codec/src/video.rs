@@ -372,24 +372,24 @@ unsafe impl Send for VideoEncoder {}
 impl VideoEncoder {
     pub fn new(options: VideoEncoderSettings) -> Result<Self, VideoEncoderError> {
         #[cfg(target_os = "linux")]
-        let fallback_options = options.clone();
-        match Self::open_internal(options) {
-            Ok(enc) => Ok(enc),
-            #[cfg(target_os = "linux")]
-            Err(err) if fallback_options.codec == VideoEncoderType::Vaapi => {
-                log::warn!(
-                    "VAAPI encoder init failed ({}); falling back to libx264 software encoder",
-                    err
-                );
-                let mut sw_opts = fallback_options;
-                sw_opts.codec = VideoEncoderType::X264;
-                Self::open_internal(sw_opts)
+        if options.codec == VideoEncoderType::Vaapi {
+            for low_power in [true, false] {
+                if let Ok(enc) = Self::open_internal(options.clone(), low_power) {
+                    return Ok(enc);
+                }
             }
-            Err(err) => Err(err),
+            log::warn!("VAAPI encoder init failed; falling back to libx264 software encoder");
+            let mut sw_opts = options;
+            sw_opts.codec = VideoEncoderType::X264;
+            return Self::open_internal(sw_opts, false);
         }
+        Self::open_internal(options, true)
     }
 
-    fn open_internal(options: VideoEncoderSettings) -> Result<Self, VideoEncoderError> {
+    fn open_internal(
+        options: VideoEncoderSettings,
+        vaapi_low_power: bool,
+    ) -> Result<Self, VideoEncoderError> {
         if !CodecType::from(options.codec).is_supported() {
             return Err(VideoEncoderError::CodecError(CodecError::NotSupportCodec));
         }
@@ -488,7 +488,9 @@ impl VideoEncoder {
                 set_option(context_mut, "realtime", 1);
             }
             VideoEncoderType::Vaapi => {
-                set_option(context_mut, "low_power", 1);
+                if vaapi_low_power {
+                    set_option(context_mut, "low_power", 1);
+                }
             }
         };
 

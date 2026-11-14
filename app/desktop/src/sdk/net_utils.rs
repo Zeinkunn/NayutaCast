@@ -39,6 +39,146 @@ impl LocalInterface {
         }
         (u32::from(self.ip) & mask) == (u32::from(target) & mask)
     }
+
+    /// Enumerates neighbor IPv4 host addresses in this interface's subnet,
+    /// supporting `/23`/`/22` networks while bounding very wide masks (`/16`) to
+    /// the local `/24`.
+    pub fn subnet_ipv4_hosts(&self, max_hosts: usize) -> Vec<Ipv4Addr> {
+        let ip_u32 = u32::from(self.ip);
+        let mask_u32 = u32::from(self.netmask);
+        let valid_mask = mask_u32 != 0 && (!mask_u32).wrapping_add(1).is_power_of_two();
+
+        let (start, end) = if valid_mask {
+            let net = ip_u32 & mask_u32;
+            let bcast = net | !mask_u32;
+            let span = bcast.saturating_sub(net) as usize;
+            if span >= 2 && span <= max_hosts + 2 {
+                (net.saturating_add(1), bcast)
+            } else {
+                let net24 = ip_u32 & 0xFFFF_FF00;
+                (net24 + 1, net24 + 255)
+            }
+        } else {
+            let net24 = ip_u32 & 0xFFFF_FF00;
+            (net24 + 1, net24 + 255)
+        };
+
+        let mut hosts = Vec::with_capacity((end - start) as usize);
+        for addr in start..end {
+            if addr == ip_u32 {
+                continue;
+            }
+            hosts.push(Ipv4Addr::from(addr));
+        }
+        hosts
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WifiDirectBeacon {
+    pub ssid: String,
+    pub signal: Option<u8>,
+    pub channel: Option<u16>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WifiNetworkContext {
+    pub active_ssid: Option<String>,
+    pub wifi_direct_tvs: Vec<WifiDirectBeacon>,
+}
+
+fn split_nmcli_terse_line(line: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut cur = String::new();
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(&next) = chars.peek() {
+                cur.push(next);
+                chars.next();
+            } else {
+                cur.push(c);
+            }
+        } else if c == ':' {
+            fields.push(std::mem::take(&mut cur));
+        } else {
+            cur.push(c);
+        }
+    }
+    fields.push(cur);
+    fields
+}
+
+/// Parses `nmcli -t -f ACTIVE,SSID,SIGNAL,CHAN dev wifi list` lines into active
+/// SSID and nearby Wi-Fi Direct (`DIRECT-*`) beacons.
+pub fn parse_nmcli_wifi_list(output: &str) -> WifiNetworkContext {
+    let mut ctx = WifiNetworkContext::default();
+    let mut seen_direct = std::collections::HashSet::new();
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let cols = split_nmcli_terse_line(trimmed);
+        if cols.len() < 2 {
+            continue;
+        }
+        let active = cols[0].eq_ignore_ascii_case("yes") || cols[0] == "*";
+        let ssid = cols[1].trim();
+        if ssid.is_empty() {
+            continue;
+        }
+        let signal = cols.get(2).and_then(|s| s.trim().parse::<u8>().ok());
+        let channel = cols.get(3).and_then(|s| s.trim().parse::<u16>().ok());
+
+        if active && ctx.active_ssid.is_none() {
+            ctx.active_ssid = Some(ssid.to_string());
+        }
+        if ssid.to_ascii_uppercase().starts_with("DIRECT-") && seen_direct.insert(ssid.to_string())
+        {
+            ctx.wifi_direct_tvs.push(WifiDirectBeacon {
+                ssid: ssid.to_string(),
+                signal,
+                channel,
+            });
+        }
+    }
+    ctx
+}
+
+/// Reads the OS Wi-Fi context non-destructively from NetworkManager cache.
+pub async fn read_wifi_network_context() -> Option<WifiNetworkContext> {
+    #[cfg(target_os = "linux")]
+    {
+        tokio::task::spawn_blocking(|| {
+            let out = std::process::Command::new("nmcli")
+                .args([
+                    "-t",
+                    "-f",
+                    "ACTIVE,SSID,SIGNAL,CHAN",
+                    "dev",
+                    "wifi",
+                    "list",
+                    "--rescan",
+                    "no",
+                ])
+                .output()
+                .ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            let text = String::from_utf8_lossy(&out.stdout);
+            Some(parse_nmcli_wifi_list(&text))
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
 }
 
 /// Classifies an OS interface name into physical `Wifi` or `Lan`, returning
@@ -381,5 +521,47 @@ mod tests {
         assert_eq!(classify_interface_kind("veth1234"), None);
         assert_eq!(classify_interface_kind("lo"), None);
         assert_eq!(classify_interface_kind("tun0"), None);
+    }
+
+    #[test]
+    fn subnet_hosts_handles_slash_23_and_clamps_wide_masks() {
+        let slash23 = LocalInterface {
+            name: "wlo1".into(),
+            ip: Ipv4Addr::new(192, 168, 80, 179),
+            netmask: Ipv4Addr::new(255, 255, 254, 0),
+            kind: NetworkKind::Wifi,
+        };
+        let hosts = slash23.subnet_ipv4_hosts(1024);
+        assert_eq!(hosts.len(), 509);
+        assert!(hosts.contains(&Ipv4Addr::new(192, 168, 80, 94)));
+        assert!(hosts.contains(&Ipv4Addr::new(192, 168, 81, 1)));
+        assert!(hosts.contains(&Ipv4Addr::new(192, 168, 81, 254)));
+        assert!(!hosts.contains(&Ipv4Addr::new(192, 168, 80, 179)));
+
+        let slash16 = LocalInterface {
+            name: "eth0".into(),
+            ip: Ipv4Addr::new(10, 20, 30, 40),
+            netmask: Ipv4Addr::new(255, 255, 0, 0),
+            kind: NetworkKind::Lan,
+        };
+        let clamped = slash16.subnet_ipv4_hosts(1024);
+        assert_eq!(clamped.len(), 253);
+        assert!(clamped.contains(&Ipv4Addr::new(10, 20, 30, 1)));
+        assert!(clamped.contains(&Ipv4Addr::new(10, 20, 30, 254)));
+    }
+
+    #[test]
+    fn parses_nmcli_wifi_list_with_direct_tv() {
+        let sample = "\
+yes:Lab-IoT:80:11
+no:DIRECT-vM-POLYTRON4K:92:11
+no:Zeee\\:Home:90:1
+";
+        let ctx = parse_nmcli_wifi_list(sample);
+        assert_eq!(ctx.active_ssid.as_deref(), Some("Lab-IoT"));
+        assert_eq!(ctx.wifi_direct_tvs.len(), 1);
+        assert_eq!(ctx.wifi_direct_tvs[0].ssid, "DIRECT-vM-POLYTRON4K");
+        assert_eq!(ctx.wifi_direct_tvs[0].signal, Some(92));
+        assert_eq!(ctx.wifi_direct_tvs[0].channel, Some(11));
     }
 }
