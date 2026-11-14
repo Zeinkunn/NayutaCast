@@ -87,22 +87,33 @@ jobs:
       - name: Validate shell scripts
         run: |
           bash -n run_native_app.sh
+          bash -n packaging/flatpak/build-flatpak.sh
 
-      - name: Validate workflow YAML files
+      - name: Validate workflow YAML, Flatpak metadata, and Cargo sources
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends python3-yaml
+          sudo apt-get install -y --no-install-recommends python3-yaml desktop-file-utils
+          desktop-file-validate packaging/flatpak/io.github.zeinkunn.NayutaCast.desktop
           python3 - <<'PY'
           import glob
           import sys
+          import xml.etree.ElementTree as ET
           import yaml
 
-          paths = sorted(glob.glob('.github/**/*.yml', recursive=True))
+          paths = sorted(
+              glob.glob('.github/**/*.yml', recursive=True)
+              + glob.glob('packaging/flatpak/*.yml')
+          )
           if not paths:
-              print("No YAML files found under .github/", file=sys.stderr)
+              print("No YAML files found", file=sys.stderr)
               sys.exit(1)
           for p in paths:
               with open(p, 'r', encoding='utf-8') as f:
                   yaml.safe_load(f)
               print(f"Valid YAML: {p}")
+
+          ET.parse('packaging/flatpak/io.github.zeinkunn.NayutaCast.metainfo.xml')
+          print("Valid XML: packaging/flatpak/io.github.zeinkunn.NayutaCast.metainfo.xml")
           PY
+          python3 packaging/flatpak/generate-cargo-sources.py Cargo.lock -o /tmp/cargo-sources.json
+          diff -u packaging/flatpak/cargo-sources.json /tmp/cargo-sources.json

@@ -130,3 +130,34 @@ jobs:
           name: nayutacast-ci-android-arm64
           path: android/build/outputs/aar/*.aar
           retention-days: 7
+
+  build-flatpak:
+    name: Build Flatpak (linux-x64)
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
+      options: --privileged
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify generated Cargo Flatpak sources match Cargo.lock
+        run: |
+          python3 packaging/flatpak/generate-cargo-sources.py Cargo.lock -o /tmp/cargo-sources.json
+          diff -u packaging/flatpak/cargo-sources.json /tmp/cargo-sources.json
+
+      - name: Build Flatpak bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: nayutacast-linux-x64.flatpak
+          manifest-path: packaging/flatpak/io.github.zeinkunn.NayutaCast.yml
+          arch: x86_64
+          cache: true
+          upload-artifact: false
+
+      - name: Upload Flatpak CI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nayutacast-ci-flatpak-x64
+          path: nayutacast-linux-x64.flatpak
+          retention-days: 7

@@ -129,6 +129,22 @@ cargo run -p nayutacast-app
 ./run_native_app.sh
 ```
 
+### Install or Build Flatpak (Linux)
+
+Install a prebuilt `.flatpak` bundle from GitHub Releases:
+
+```bash
+flatpak install --user flathub org.freedesktop.Platform//25.08
+flatpak install --user ./nayutacast-linux-x64.flatpak
+flatpak run io.github.zeinkunn.NayutaCast
+```
+
+Or build the `.flatpak` bundle locally:
+
+```bash
+./packaging/flatpak/build-flatpak.sh
+```
+
 ### Build & Test Workspace
 
 ```bash

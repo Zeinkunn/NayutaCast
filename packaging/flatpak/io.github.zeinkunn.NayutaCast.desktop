@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=NayutaCast
+Comment=Low-latency cross-platform screen & Smart TV casting application
+Exec=nayutacast-app
+Icon=io.github.zeinkunn.NayutaCast
+Terminal=false
+Categories=AudioVideo;Video;
+Keywords=screen;cast;mirror;tv;dlna;chromecast;
+StartupWMClass=NayutaCast

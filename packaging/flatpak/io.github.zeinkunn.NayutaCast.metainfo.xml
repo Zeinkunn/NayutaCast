@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.zeinkunn.NayutaCast</id>
+  <name>NayutaCast</name>
+  <summary>Low-latency screen mirroring and Universal Smart TV casting</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LGPL-2.1-only</project_license>
+  <developer id="io.github.zeinkunn">
+    <name>Zeinkunn</name>
+  </developer>
+  <description>
+    <p>
+      NayutaCast is a 100% native Rust desktop casting application and low-latency
+      screen mirroring toolkit designed for standard Wi-Fi and LAN networks.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Universal Smart TV support: Google Cast (Android TV / Chromecast), DLNA/UPnP, Apple AirPlay, Roku ECP, and browser /watch mode</li>
+      <li>Hardware-accelerated VAAPI (H.264) and software libx264 live multiplexing (fMP4, HLS, MPEG-TS)</li>
+      <li>Wayland wlr-screencopy, PipeWire screen/audio capture, and X11 MIT-SHM fallback</li>
+      <li>OS virtual display Mirror and Extend management on Wayland/Hyprland</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.zeinkunn.NayutaCast.desktop</launchable>
+  <provides>
+    <binary>nayutacast-app</binary>
+    <binary>nayutacast-server</binary>
+  </provides>
+  <url type="homepage">https://github.com/Zeinkunn/NayutaCast</url>
+  <url type="bugtracker">https://github.com/Zeinkunn/NayutaCast/issues</url>
+  <url type="vcs-browser">https://github.com/Zeinkunn/NayutaCast</url>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Device scanner for Smart TVs and LAN receivers</caption>
+      <image>https://raw.githubusercontent.com/Zeinkunn/NayutaCast/main/docs/images/scanner.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Live screen casting and OS display Mirror/Extend controls</caption>
+      <image>https://raw.githubusercontent.com/Zeinkunn/NayutaCast/main/docs/images/casting.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Video encoder, resolution, and audio stream settings</caption>
+      <image>https://raw.githubusercontent.com/Zeinkunn/NayutaCast/main/docs/images/settings.png</image>
+    </screenshot>
+  </screenshots>
+  <releases>
+    <release version="0.4.0" date="2026-11-14">
+      <description>
+        <p>Initial v0.4.0 release with 100% native Rust desktop UI, Smart TV casting fixes, VAAPI/x264 live muxer timing improvements, and Flatpak support.</p>
+      </description>
+    </release>
+  </releases>
+  <content_rating type="oars-1.1" />
+</component>

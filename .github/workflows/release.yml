@@ -113,8 +113,8 @@ jobs:
               Exec=/usr/bin/nayutacast-app
               Icon=nayutacast
               Terminal=false
-              Categories=AudioVideo;Video;Network;Utility;
               Keywords=screen;cast;mirror;tv;dlna;chromecast;
+              Categories=AudioVideo;Video;
               StartupWMClass=NayutaCast
           """)
           desktop_path = os.path.join(root, "usr/share/applications/nayutacast.desktop")
@@ -208,9 +208,44 @@ jobs:
           path: release-assets/*
           retention-days: 7
 
+  build-flatpak:
+    name: Package Flatpak (linux-x64)
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
+      options: --privileged
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Regenerate Cargo Flatpak sources from Cargo.lock
+        run: |
+          python3 packaging/flatpak/generate-cargo-sources.py Cargo.lock -o packaging/flatpak/cargo-sources.json
+
+      - name: Build Flatpak bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: nayutacast-linux-x64.flatpak
+          manifest-path: packaging/flatpak/io.github.zeinkunn.NayutaCast.yml
+          arch: x86_64
+          cache: true
+          upload-artifact: false
+
+      - name: Stage Flatpak release asset
+        run: |
+          mkdir -p release-assets
+          cp -v nayutacast-linux-x64.flatpak release-assets/nayutacast-linux-x64.flatpak
+
+      - name: Upload Flatpak release asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-flatpak-x64
+          path: release-assets/*
+          retention-days: 7
+
   deploy:
     name: Publish GitHub Release
-    needs: build
+    needs: [build, build-flatpak]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
     steps:
