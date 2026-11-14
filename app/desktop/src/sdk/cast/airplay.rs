@@ -126,7 +126,8 @@ impl AirPlaySession {
                 continue;
             }
 
-            // Some Android TV AirPlay receivers start paused until /rate?value=1 is sent.
+            // Some Android TV AirPlay receivers start paused until
+            // /rate?value=1 is sent.
             let _ = http_request(
                 "POST",
                 &format!("{}/rate?value=1.000000", base_url),

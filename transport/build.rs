@@ -37,6 +37,18 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if let Ok(lib_dir) = env::var("SRT_LIB_DIR") {
+        println!("cargo:rerun-if-env-changed=SRT_LIB_DIR");
+        println!("cargo:rustc-link-search=native={}", lib_dir);
+        println!("cargo:rustc-link-lib=srt");
+        if cfg!(target_os = "linux") {
+            println!("cargo:rustc-link-lib=stdc++");
+        } else if !cfg!(target_os = "windows") {
+            println!("cargo:rustc-link-lib=c++");
+        }
+        return Ok(());
+    }
+
     if which("cmake").is_err() {
         panic!("
             You don't have cmake installed, compiling srt requires cmake to do it, now it's unavoidable, you need to install cmake.

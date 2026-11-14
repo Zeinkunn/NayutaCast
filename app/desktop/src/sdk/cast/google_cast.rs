@@ -288,7 +288,8 @@ impl GoogleCastSession {
             )
             .await?;
 
-            // Android TV cold-boot of WebView/Default Media Receiver can take >10s.
+            // Android TV cold-boot of WebView/Default Media Receiver can take
+            // >10s.
             let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
 
             while tokio::time::Instant::now() < deadline && transport_id.is_none() {

@@ -1303,7 +1303,8 @@ mod tests {
         };
 
         let mut first_moof_ms: Option<u64> = None;
-        // Simulate ~6.25 FPS capture (160ms/frame) over ~3.0s while configured for 60 fps.
+        // Simulate ~6.25 FPS capture (160ms/frame) over ~3.0s while configured
+        // for 60 fps.
         for i in 0..20u64 {
             let elapsed_ms = i * 160;
             let out = muxer

@@ -41,8 +41,8 @@ impl LocalInterface {
     }
 
     /// Enumerates neighbor IPv4 host addresses in this interface's subnet,
-    /// supporting `/23`/`/22` networks while bounding very wide masks (`/16`) to
-    /// the local `/24`.
+    /// supporting `/23`/`/22` networks while bounding very wide masks (`/16`)
+    /// to the local `/24`.
     pub fn subnet_ipv4_hosts(&self, max_hosts: usize) -> Vec<Ipv4Addr> {
         let ip_u32 = u32::from(self.ip);
         let mask_u32 = u32::from(self.netmask);

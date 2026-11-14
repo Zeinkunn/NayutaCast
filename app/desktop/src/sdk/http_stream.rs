@@ -371,7 +371,8 @@ async fn handle_client(
 
             // Wait until both ftyp+moov init AND at least one keyframe-aligned
             // moof fragment are ready before flushing response headers/body, so
-            // receivers never stall in LOADING after receiving only header bytes.
+            // receivers never stall in LOADING after receiving only header
+            // bytes.
             for _ in 0..70 {
                 if hub.stopped.load(Ordering::SeqCst)
                     || (!hub.fmp4_init.read().await.is_empty()

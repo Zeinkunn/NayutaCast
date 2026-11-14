@@ -1971,7 +1971,8 @@ mod tests {
 
     #[test]
     fn parse_bplist00_extracts_name_model_and_flags() {
-        // Minimal valid bplist00 dict: {"name": "Polytron 4K", "model": "ATV", "statusFlags": 516}
+        // Minimal valid bplist00 dict: {"name": "Polytron 4K", "model": "ATV",
+        // "statusFlags": 516}
         let mut buf = b"bplist00".to_vec();
         let off0 = buf.len() as u8;
         // 0: dict with 3 pairs -> k: 1,2,3 v: 4,5,6
