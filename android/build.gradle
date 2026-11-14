@@ -87,7 +87,7 @@ cargo {
     prebuiltToolchains = true
     pythonCommand = "python3"
     module = nativeModulePath
-    libname = "android-native"
+    libname = "nayutacast"
     targets = ["arm", "arm64"]
     targetDirectory = cargoTargetPath
     targetIncludes = ["libnayutacast.so"]
@@ -98,7 +98,23 @@ cargo {
 }
 
 tasks.configureEach { task ->
-    if ((task.name == "javaPreCompileDebug" || task.name == "javaPreCompileRelease")) {
+    if (task.name == "cargoBuild") {
+        task.doLast {
+            def expected = [
+                layout.buildDirectory.file("rustJniLibs/android/armeabi-v7a/libnayutacast.so").get().asFile,
+                layout.buildDirectory.file("rustJniLibs/android/arm64-v8a/libnayutacast.so").get().asFile,
+            ]
+            expected.each { f ->
+                if (!f.exists() || f.length() == 0) {
+                    throw new GradleException("Missing native Rust library after cargoBuild: ${f.absolutePath}")
+                }
+            }
+        }
+    }
+    if (task.name == "javaPreCompileDebug"
+            || task.name == "javaPreCompileRelease"
+            || task.name == "mergeDebugJniLibFolders"
+            || task.name == "mergeReleaseJniLibFolders") {
         task.dependsOn "cargoBuild"
     }
 }
