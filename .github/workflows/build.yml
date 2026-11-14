@@ -75,7 +75,7 @@ jobs:
           retention-days: 7
 
   build-android:
-    name: Build (android-arm64)
+    name: Build (android-universal)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -87,15 +87,15 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Rust stable toolchain with Android ARM64 target
+      - name: Setup Rust stable toolchain with Android ARM targets
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android
+          targets: aarch64-linux-android, armv7-linux-androideabi
 
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: build-android-arm64
+          prefix-key: build-android-universal
 
       - name: Install Android SDK 35, NDK 27 & build tools
         run: |
@@ -131,12 +131,13 @@ jobs:
           APK_SRC="$(find app/android/app/build/outputs/apk/release -name '*.apk' | head -n 1)"
           test -n "${APK_SRC}"
           cp -v "${APK_SRC}" android-dist/nayutacast-android-tv.apk
+          python3 -c 'import zipfile; names = zipfile.ZipFile("android-dist/nayutacast-android-tv.apk").namelist(); sos = sorted(n for n in names if n.endswith(".so")); print("Bundled .so libraries:", sos); required = ["lib/armeabi-v7a/libnayutacast.so", "lib/arm64-v8a/libnayutacast.so"]; missing = [r for r in required if r not in names]; assert not missing, f"missing native ABIs: {missing}"'
           "${ANDROID_HOME}/build-tools/35.0.0/apksigner" verify --verbose android-dist/nayutacast-android-tv.apk
 
       - name: Upload Android AAR and TV APK artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: nayutacast-ci-android-arm64
+          name: nayutacast-ci-android
           path: android-dist/*
           retention-days: 7
 

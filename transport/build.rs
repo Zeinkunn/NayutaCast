@@ -71,7 +71,7 @@ fn main() -> Result<()> {
 
     if target.contains("android") {
         #[cfg(not(target_os = "windows"))]
-        use_android_library(&srt_dir)?;
+        use_android_library(&srt_dir, &target)?;
     } else {
         use_library(srt_dir)?;
     }
@@ -80,11 +80,31 @@ fn main() -> Result<()> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn use_android_library(srt_dir: &str) -> Result<()> {
+fn android_abi_for_target(target: &str) -> std::io::Result<&'static str> {
+    match target {
+        "aarch64-linux-android" => Ok("arm64-v8a"),
+        "armv7-linux-androideabi" | "arm-linux-androideabi" => Ok("armeabi-v7a"),
+        "x86_64-linux-android" => Ok("x86_64"),
+        "i686-linux-android" => Ok("x86"),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("unsupported Android target triple: {target}"),
+        )),
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn use_android_library(srt_dir: &str, target: &str) -> Result<()> {
     let ndk_path = env::var("ANDROID_NDK_PATH")?;
     let api_level = env::var("ANDROID_API_LEVEL")?;
+    let android_abi = android_abi_for_target(target)?;
+    let lib_dir = format!("{srt_dir}/scripts/build-android/{android_abi}/lib");
 
-    if !is_exsit(&join(srt_dir, "./libsrt.a")) {
+    println!("cargo:rerun-if-env-changed=TARGET");
+    println!("cargo:rerun-if-env-changed=ANDROID_NDK_PATH");
+    println!("cargo:rerun-if-env-changed=ANDROID_API_LEVEL");
+
+    if !is_exsit(&join(&lib_dir, "libsrt.a")) {
         {
             let cmake = join(srt_dir, "CMakeLists.txt");
             fs::write(
@@ -97,15 +117,12 @@ fn use_android_library(srt_dir: &str) -> Result<()> {
         }
 
         exec(
-            &format!("./build-android -n {ndk_path} -a {api_level} -t arm64-v8a"),
+            &format!("./build-android -n {ndk_path} -a {api_level} -t {android_abi}"),
             &join(srt_dir, "./scripts/build-android"),
         )?;
     }
 
-    println!(
-        "cargo:rustc-link-search=all={}/scripts/build-android/arm64-v8a/lib",
-        srt_dir
-    );
+    println!("cargo:rustc-link-search=all={lib_dir}");
     println!("cargo:rustc-link-lib=static=srt");
     println!("cargo:rustc-link-lib=static=ssl");
     println!("cargo:rustc-link-lib=static=crypto");
