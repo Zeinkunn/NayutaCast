@@ -2,14 +2,14 @@ mod discovery;
 mod receiver;
 mod sender;
 
-use std::{cell::RefCell, ffi::c_void, ptr::null_mut, sync::Arc, thread};
+use std::{cell::RefCell, ffi::c_void, sync::Arc, thread};
 
 use anyhow::Result;
 use common::{logger, runtime::get_runtime_handle};
 use jni::{
     JNIEnv, JavaVM,
-    objects::{JByteArray, JClass, JObject, JString},
-    sys::JNI_VERSION_1_6,
+    objects::{JByteArray, JObject, JString},
+    sys::{JNI_FALSE, JNI_TRUE, JNI_VERSION_1_6, jboolean, jlong},
 };
 
 use parking_lot::Mutex;
@@ -148,6 +148,19 @@ extern "system" fn JNI_OnUnload(_: JavaVM, _: *mut c_void) {
     transport::shutdown();
 }
 
+fn into_jlong<T>(value: T) -> jlong {
+    Box::into_raw(Box::new(value)) as usize as jlong
+}
+
+/// Converts a JNI `long` handle back into a non-null raw pointer.
+///
+/// Must match Kotlin `Long` (`jlong`, always 64-bit) on 32-bit ABIs such as
+/// `armeabi-v7a` so argument registers are never misread.
+unsafe fn ptr_from_jlong<T>(handle: jlong) -> Option<*mut T> {
+    let addr = usize::try_from(handle).ok()?;
+    (addr != 0).then_some(addr as *mut T)
+}
+
 fn ok_or_check<'a, F, T>(env: &mut JNIEnv<'a>, func: F) -> Option<T>
 where
     F: FnOnce(&mut JNIEnv<'a>) -> Result<T>,
@@ -167,13 +180,10 @@ where
 #[allow(non_snake_case)]
 extern "system" fn Java_com_nayutacast_Nayutacast_createTransportSender(
     mut env: JNIEnv,
-    _this: JClass,
+    _this: JObject,
     options: JString,
-) -> *const Sender {
-    ok_or_check(&mut env, |env| {
-        Ok(Box::into_raw(Box::new(Sender::new(env, &options)?)))
-    })
-    .unwrap_or_else(|| null_mut())
+) -> jlong {
+    ok_or_check(&mut env, |env| Ok(into_jlong(Sender::new(env, &options)?))).unwrap_or(0)
 }
 
 /// get transport sender id.
@@ -181,15 +191,18 @@ extern "system" fn Java_com_nayutacast_Nayutacast_createTransportSender(
 #[allow(non_snake_case)]
 extern "system" fn Java_com_nayutacast_Nayutacast_getTransportSenderId<'a>(
     mut env: JNIEnv<'a>,
-    _this: JClass,
-    sender: *const Sender,
+    _this: JObject,
+    sender: jlong,
 ) -> JString<'a> {
-    assert!(!sender.is_null());
+    let Some(sender) = (unsafe { ptr_from_jlong::<Sender>(sender) }) else {
+        log::error!("getTransportSenderId called with invalid handle: {sender}");
+        return JObject::null().into();
+    };
 
     ok_or_check(&mut env, |env| {
         Ok(env.new_string(unsafe { &*sender }.get_id())?)
     })
-    .unwrap()
+    .unwrap_or_else(|| JObject::null().into())
 }
 
 /// Sends the packet to the sender instance.
@@ -197,17 +210,17 @@ extern "system" fn Java_com_nayutacast_Nayutacast_getTransportSenderId<'a>(
 #[allow(non_snake_case)]
 extern "system" fn Java_com_nayutacast_Nayutacast_sendStreamBufferToTransportSender(
     mut env: JNIEnv,
-    _this: JClass,
-    sender: *const Sender,
+    _this: JObject,
+    sender: jlong,
     info: JObject,
     buf: JByteArray,
-) -> bool {
-    assert!(!sender.is_null());
+) -> jboolean {
+    let Some(sender) = (unsafe { ptr_from_jlong::<Sender>(sender) }) else {
+        return JNI_FALSE;
+    };
 
-    ok_or_check(&mut env, |mut env| {
-        unsafe { &*sender }.sink(&mut env, info, buf)
-    })
-    .unwrap_or(false)
+    let ok = ok_or_check(&mut env, |env| unsafe { &*sender }.sink(env, info, buf)).unwrap_or(false);
+    if ok { JNI_TRUE } else { JNI_FALSE }
 }
 
 /// release transport sender.
@@ -215,12 +228,12 @@ extern "system" fn Java_com_nayutacast_Nayutacast_sendStreamBufferToTransportSen
 #[allow(non_snake_case)]
 extern "system" fn Java_com_nayutacast_Nayutacast_releaseTransportSender(
     _env: JNIEnv,
-    _this: JClass,
-    sender: *mut Sender,
+    _this: JObject,
+    sender: jlong,
 ) {
-    assert!(!sender.is_null());
-
-    drop(unsafe { Box::from_raw(sender) });
+    if let Some(sender) = unsafe { ptr_from_jlong::<Sender>(sender) } {
+        drop(unsafe { Box::from_raw(sender) });
+    }
 }
 
 /// Creates the receiver, the return value indicates whether the creation was
@@ -229,11 +242,11 @@ extern "system" fn Java_com_nayutacast_Nayutacast_releaseTransportSender(
 #[allow(non_snake_case)]
 extern "system" fn Java_com_nayutacast_Nayutacast_createTransportReceiver(
     mut env: JNIEnv,
-    _this: JClass,
+    _this: JObject,
     id: JString,
     options: JString,
     observer: JObject,
-) -> *const Arc<Receiver> {
+) -> jlong {
     ok_or_check(&mut env, |env| {
         let receiver = Arc::new(Receiver::new(env, &id, &options, &observer)?);
 
@@ -259,9 +272,9 @@ extern "system" fn Java_com_nayutacast_Nayutacast_createTransportReceiver(
                 }
             })?;
 
-        Ok(Box::into_raw(Box::new(receiver)))
+        Ok(into_jlong(receiver))
     })
-    .unwrap_or_else(|| null_mut())
+    .unwrap_or(0)
 }
 
 /// release transport receiver.
@@ -269,10 +282,12 @@ extern "system" fn Java_com_nayutacast_Nayutacast_createTransportReceiver(
 #[allow(non_snake_case)]
 extern "system" fn Java_com_nayutacast_Nayutacast_releaseTransportReceiver(
     _env: JNIEnv,
-    _this: JClass,
-    receiver: *mut Arc<Receiver>,
+    _this: JObject,
+    receiver: jlong,
 ) {
-    assert!(!receiver.is_null());
+    let Some(receiver) = (unsafe { ptr_from_jlong::<Arc<Receiver>>(receiver) }) else {
+        return;
+    };
 
     if let Err(e) = unsafe { Box::from_raw(receiver) }.close() {
         log::error!("{:?}", e);
@@ -287,32 +302,34 @@ extern "system" fn Java_com_nayutacast_Nayutacast_releaseTransportReceiver(
 #[allow(non_snake_case)]
 extern "system" fn Java_com_nayutacast_Discovery_create(
     mut env: JNIEnv,
-    _this: JClass,
+    _this: JObject,
     topic: JString,
     observer: JObject,
-) -> *const DiscoveryService {
+) -> jlong {
     ok_or_check(&mut env, |env| {
         let topic: String = env.get_string(&topic)?.into();
         let observer = DiscoveryServiceObserver(env.new_global_ref(observer)?);
 
-        Ok(Box::into_raw(Box::new(
+        Ok(into_jlong(
             get_runtime_handle().block_on(DiscoveryService::new(topic, observer))?,
-        )))
+        ))
     })
-    .unwrap_or_else(|| null_mut())
+    .unwrap_or(0)
 }
 
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
 extern "system" fn Java_com_nayutacast_Discovery_broadcast(
     mut env: JNIEnv,
-    _this: JClass,
-    discovery: *mut DiscoveryService,
+    _this: JObject,
+    discovery: jlong,
     message: JByteArray,
-) -> bool {
-    assert!(!discovery.is_null());
+) -> jboolean {
+    let Some(discovery) = (unsafe { ptr_from_jlong::<DiscoveryService>(discovery) }) else {
+        return JNI_FALSE;
+    };
 
-    ok_or_check(&mut env, |env| {
+    let ok = ok_or_check(&mut env, |env| {
         let mut bytes = vec![0; env.get_array_length(&message)? as usize];
         {
             env.get_byte_array_region(&message, 0, unsafe {
@@ -323,7 +340,8 @@ extern "system" fn Java_com_nayutacast_Discovery_broadcast(
         get_runtime_handle().block_on(unsafe { &*discovery }.broadcast(bytes))?;
         Ok(true)
     })
-    .unwrap_or(false)
+    .unwrap_or(false);
+    if ok { JNI_TRUE } else { JNI_FALSE }
 }
 
 /// release the discovery service
@@ -331,10 +349,28 @@ extern "system" fn Java_com_nayutacast_Discovery_broadcast(
 #[allow(non_snake_case)]
 extern "system" fn Java_com_nayutacast_Discovery_release(
     _env: JNIEnv,
-    _this: JClass,
-    discovery: *mut DiscoveryService,
+    _this: JObject,
+    discovery: jlong,
 ) {
-    assert!(!discovery.is_null());
+    if let Some(discovery) = unsafe { ptr_from_jlong::<DiscoveryService>(discovery) } {
+        drop(unsafe { Box::from_raw(discovery) });
+    }
+}
 
-    drop(unsafe { Box::from_raw(discovery) });
+#[cfg(test)]
+mod tests {
+    use super::{into_jlong, ptr_from_jlong};
+
+    #[test]
+    fn jlong_handle_roundtrip_and_invalid_values() {
+        assert_eq!(unsafe { ptr_from_jlong::<u64>(0) }, None);
+        assert_eq!(unsafe { ptr_from_jlong::<u64>(-1) }, None);
+
+        let handle = into_jlong(0x1234_5678u32);
+        assert!(handle > 0);
+
+        let ptr = unsafe { ptr_from_jlong::<u32>(handle) }.expect("valid handle must decode");
+        assert_eq!(unsafe { *ptr }, 0x1234_5678u32);
+        drop(unsafe { Box::from_raw(ptr) });
+    }
 }

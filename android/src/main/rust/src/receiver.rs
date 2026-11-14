@@ -34,29 +34,30 @@ impl Receiver {
 
     pub fn sink(&self, buf: Bytes, kind: StreamKind, flags: i32, timestamp: u64) -> Result<()> {
         let mut env = get_current_env();
-        let buf = env.byte_array_from_slice(&buf)?.into();
-        let ret = env.call_method(
-            self.observer.as_obj(),
-            "sink",
-            "(IIJ[B)Z",
-            &[
-                JValue::Int(kind as i32),
-                JValue::Int(flags),
-                JValue::Long(timestamp as i64),
-                JValue::Object(&buf),
-            ],
-        );
+        env.with_local_frame(16, |env| {
+            let array = env.byte_array_from_slice(&buf)?.into();
+            let ret = env.call_method(
+                self.observer.as_obj(),
+                "sink",
+                "(IIJ[B)Z",
+                &[
+                    JValue::Int(kind as i32),
+                    JValue::Int(flags),
+                    JValue::Long(timestamp as i64),
+                    JValue::Object(&array),
+                ],
+            )?;
 
-        let _ = env.delete_local_ref(buf);
-        if let JValueGen::Bool(ret) = ret? {
-            if ret == 0 {
-                return Err(anyhow!("sink return false."));
+            if let JValueGen::Bool(ret) = ret {
+                if ret == 0 {
+                    return Err(anyhow!("sink return false."));
+                }
+            } else {
+                return Err(anyhow!("connect return result type missing."));
             }
-        } else {
-            return Err(anyhow!("connect return result type missing."));
-        };
 
-        Ok(())
+            Ok(())
+        })
     }
 
     pub fn close(&self) -> Result<()> {

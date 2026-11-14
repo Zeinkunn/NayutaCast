@@ -11,6 +11,28 @@ pub struct DiscoveryServiceObserver(pub GlobalRef);
 unsafe impl Send for DiscoveryServiceObserver {}
 unsafe impl Sync for DiscoveryServiceObserver {}
 
+impl DiscoveryServiceObserver {
+    fn emit_peer_event(&self, method: &str, ctx: DiscoveryContext<'_>) {
+        let mut env = get_current_env();
+        if let Err(e) = env.with_local_frame(16, |env| {
+            env.call_method(
+                self.0.as_obj(),
+                method,
+                "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
+                &[
+                    JValue::Object(&env.new_string(ctx.local_id)?.into()),
+                    JValue::Object(&env.new_string(ctx.id)?.into()),
+                    JValue::Object(&env.new_string(ctx.ip.to_string())?.into()),
+                ],
+            )?;
+
+            Ok::<(), Error>(())
+        }) {
+            log::error!("DiscoveryObserver {method} error={:?}", e);
+        }
+    }
+}
+
 impl DiscoveryObserver for DiscoveryServiceObserver {
     async fn online(&self, ctx: DiscoveryContext<'_>) {
         log::info!(
@@ -18,46 +40,12 @@ impl DiscoveryObserver for DiscoveryServiceObserver {
             ctx.id,
             ctx.ip
         );
-
-        let mut env = get_current_env();
-        if let Err(e) = (|| {
-            env.call_method(
-                self.0.as_obj(),
-                "onLine",
-                "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
-                &[
-                    JValue::Object(&env.new_string(ctx.local_id)?.into()),
-                    JValue::Object(&env.new_string(ctx.id)?.into()),
-                    JValue::Object(&env.new_string(ctx.ip.to_string())?.into()),
-                ],
-            )?;
-
-            Ok::<(), Error>(())
-        })() {
-            log::error!("DiscoveryObserver on line error={:?}", e);
-        }
+        self.emit_peer_event("onLine", ctx);
     }
 
     async fn offline(&self, ctx: DiscoveryContext<'_>) {
         log::info!("devices manager device offline, id={}", ctx.id);
-
-        let mut env = get_current_env();
-        if let Err(e) = (|| {
-            env.call_method(
-                self.0.as_obj(),
-                "offLine",
-                "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
-                &[
-                    JValue::Object(&env.new_string(ctx.local_id)?.into()),
-                    JValue::Object(&env.new_string(ctx.id)?.into()),
-                    JValue::Object(&env.new_string(ctx.ip.to_string())?.into()),
-                ],
-            )?;
-
-            Ok::<(), Error>(())
-        })() {
-            log::error!("DiscoveryObserver off line error={:?}", e);
-        }
+        self.emit_peer_event("offLine", ctx);
     }
 
     async fn on_message(&self, ctx: DiscoveryContext<'_>, message: Vec<u8>) {
@@ -68,7 +56,7 @@ impl DiscoveryObserver for DiscoveryServiceObserver {
         );
 
         let mut env = get_current_env();
-        if let Err(e) = (|| {
+        if let Err(e) = env.with_local_frame(16, |env| {
             env.call_method(
                 self.0.as_obj(),
                 "onMessage",
@@ -82,7 +70,7 @@ impl DiscoveryObserver for DiscoveryServiceObserver {
             )?;
 
             Ok::<(), Error>(())
-        })() {
+        }) {
             log::error!("DiscoveryObserver on message error={:?}", e);
         }
     }
