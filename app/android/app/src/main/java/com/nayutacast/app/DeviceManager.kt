@@ -1,119 +1,151 @@
 package com.nayutacast.app
 
+import android.content.Context
+import android.net.wifi.WifiManager
 import android.util.Log
 import com.nayutacast.Discovery
 import com.nayutacast.DiscoveryService
 import com.nayutacast.DiscoveryServiceObserver
 import com.nayutacast.MediaStreamDescription
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.util.concurrent.atomic.AtomicBoolean
 
-class DeviceManager(private var settings: Settings, scope: CoroutineScope) {
-    private val channel = Channel<Unit>()
+class DeviceManager(
+    context: Context,
+    private val settings: Settings,
+    private val scope: CoroutineScope,
+    private val onP2pReadyChanged: (Boolean) -> Unit,
+    private val onStreamStart: (peerId: String, senderName: String, senderIp: String, description: MediaStreamDescription) -> Unit,
+    private val onStreamStop: (peerId: String) -> Unit,
+    private val onPeerOffline: (peerId: String) -> Unit,
+) {
+    private val json = Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+    }
+    private val released = AtomicBoolean(false)
+    private var multicastLock: WifiManager.MulticastLock? = null
+    @Volatile
     private var discovery: DiscoveryService? = null
-    private val devices: HashMap<String, Device> = HashMap()
-
-    private var cacheTargets: List<String> = listOf()
-    private var cacheDescription: MediaStreamDescription? = null
-
-    val all: List<Device> get() = devices.values.toList()
-    val watcher: Channel<Unit> get() = channel
 
     init {
-        val onLineChannel = Channel<Unit>()
+        val wifi = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+        runCatching {
+            multicastLock = wifi?.createMulticastLock("nayutacast-tv-discovery")?.apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        }.onFailure {
+            Log.w("nayutacast", "Unable to acquire Wifi MulticastLock: ${it.message}")
+        }
 
-        discovery =
+        scope.launch(Dispatchers.IO) {
+            startDiscoveryService()
+        }
+    }
+
+    private fun startDiscoveryService() {
+        if (released.get() || discovery != null) {
+            return
+        }
+
+        val service = runCatching {
             Discovery().createService("nayutacast-app-core", object : DiscoveryServiceObserver() {
                 override fun onLine(localId: String, id: String, ip: String) {
-                    Log.i("nayutacast", "device manager on line, local_id=$localId, id=$id, ip=$ip")
-
-                    scope.launch {
-                        onLineChannel.send(Unit)
+                    Log.i("nayutacast", "P2P peer online: localId=$localId id=$id ip=$ip")
+                    scope.launch(Dispatchers.IO) {
+                        broadcastIdentity(listOf(id))
                     }
                 }
 
                 override fun offLine(localId: String, id: String, ip: String) {
-                    Log.i("nayutacast", "device manager off line, local_id=$localId, id=$id")
-
-                    devices.remove(id)
-
-                    scope.launch {
-                        channel.send(Unit)
-                    }
+                    Log.i("nayutacast", "P2P peer offline: localId=$localId id=$id")
+                    onPeerOffline(id)
                 }
 
                 override fun onMessage(localId: String, id: String, ip: String, message: ByteArray) {
-                    Log.i("nayutacast", "device manager on message")
-
                     try {
-                        val (targets, name, kind, description) = Json.decodeFromString<ServiceMessage>(
-                            String(message, Charsets.UTF_8)
-                        )
-
-                        Log.i(
-                            "nayutacast",
-                            "device manager on message, targets=$targets, name=$name, kind=$kind, description=$description"
-                        )
-
-                        if (targets.isEmpty() || targets.contains(localId)) {
-                            devices[id] = Device(name, ip, kind, description)
-
-                            scope.launch {
-                                channel.send(Unit)
-                            }
+                        val raw = String(message, Charsets.UTF_8)
+                        val msg = json.decodeFromString<ServiceMessage>(raw)
+                        if (msg.targets.isNotEmpty() && !msg.targets.contains(localId)) {
+                            return
                         }
-                    } catch (e: Error) {
-                        Log.e("nayutacast", "device manager on message error=$e")
+
+                        val desc = msg.description
+                        if (desc != null) {
+                            onStreamStart(
+                                id,
+                                msg.name.ifBlank { ip },
+                                ip,
+                                desc,
+                            )
+                        } else if (msg.kind != DeviceType.Android || msg.targets.contains(localId)) {
+                            onStreamStop(id)
+                        }
+                    } catch (e: Exception) {
+                        Log.e("nayutacast", "Failed to decode ServiceMessage", e)
                     }
                 }
             })
+        }.onFailure {
+            Log.w("nayutacast", "libp2p Discovery unavailable (LAN HTTP 60344 remains active): ${it.message}")
+        }.getOrNull()
 
-        scope.launch {
-            for (x in onLineChannel) {
-                val payload = ServiceMessage(
-                    cacheTargets,
-                    settings.value.system.name,
-                    kind = DeviceType.Android,
-                    cacheDescription,
-                )
+        if (released.get()) {
+            runCatching { service?.release() }
+            return
+        }
 
-                Log.i("nayutacast", "device manager send message=$payload")
+        discovery = service
+        onP2pReadyChanged(service != null)
+        if (service != null) {
+            broadcastIdentity()
+        }
+    }
 
-                discovery?.broadcast(Json.encodeToString(payload).toByteArray(Charsets.UTF_8))
+    fun broadcastIdentity(targets: List<String> = emptyList()) {
+        val current = discovery ?: return
+        val payload = ServiceMessage(
+            targets = targets,
+            name = settings.value.system.name,
+            kind = DeviceType.Android,
+            description = null,
+        )
+        runCatching {
+            current.broadcast(json.encodeToString(payload).toByteArray(Charsets.UTF_8))
+        }.onFailure {
+            Log.w("nayutacast", "Failed to broadcast identity: ${it.message}")
+        }
+    }
+
+    fun refresh() {
+        scope.launch(Dispatchers.IO) {
+            if (discovery == null) {
+                startDiscoveryService()
+            } else {
+                broadcastIdentity()
             }
         }
     }
 
-    fun send(targets: List<String>, description: MediaStreamDescription?) {
-        val payload = ServiceMessage(
-            targets,
-            settings.value.system.name,
-            kind = DeviceType.Android,
-            description
-        )
-
-        Log.i("nayutacast", "device manager send message=$payload")
-
-        discovery?.broadcast(Json.encodeToString(payload).toByteArray(Charsets.UTF_8))
-
-        cacheTargets = targets
-        cacheDescription = description
-    }
-
     fun release() {
-        discovery?.release()
+        if (!released.compareAndSet(false, true)) {
+            return
+        }
+        runCatching { discovery?.release() }
+        discovery = null
+        runCatching {
+            if (multicastLock?.isHeld == true) {
+                multicastLock?.release()
+            }
+        }
+        multicastLock = null
     }
-
-    @Serializable
-    data class Device(
-        val name: String,
-        val ip: String,
-        val kind: DeviceType,
-        val description: MediaStreamDescription?,
-    )
 
     @Serializable
     enum class DeviceType {

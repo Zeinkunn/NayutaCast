@@ -320,6 +320,7 @@ mod tests {
             airplay_port: None,
             roku_port: None,
             nayutacast_peer_id: None,
+            nayutacast_tv_port: None,
             is_custom: true,
         };
 
@@ -520,6 +521,7 @@ mod tests {
             airplay_port: None,
             roku_port: None,
             nayutacast_peer_id: None,
+            nayutacast_tv_port: None,
             is_custom: true,
         };
 

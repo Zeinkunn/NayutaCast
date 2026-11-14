@@ -869,6 +869,7 @@ impl CastingSession {
             airplay_port: None,
             roku_port: None,
             nayutacast_peer_id: None,
+            nayutacast_tv_port: None,
             is_custom: true,
         };
         let mode = DisplayMode::from_str_lossy(&settings.display_mode);

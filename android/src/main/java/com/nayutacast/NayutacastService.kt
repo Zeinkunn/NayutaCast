@@ -32,6 +32,11 @@ abstract class NayutacastReceiverObserver {
     open fun sink(bytes: ByteArray, kind: StreamType) {}
 
     /**
+     * Called when the video decoder reports the actual output video dimensions.
+     */
+    open fun onVideoSizeChanged(width: Int, height: Int) {}
+
+    /**
      * Called when the receiver is closed, the likely reason is because the underlying transport
      * layer has been disconnected, perhaps because the sender has been closed or the network is
      * disconnected.
@@ -93,17 +98,36 @@ class NayutacastService {
                     description.id,
                     description.transport,
                     object : NayutacastReceiverAdapterObserver() {
+                        @Volatile
                         private var isReleased = false
-                        private val audioDecoder = observer.track?.let { Audio.AudioDecoder(it) }
+                        private val audioDecoder = observer.track?.let { track ->
+                            runCatching {
+                                Audio.AudioDecoder(track).apply { start() }
+                            }.onFailure { err ->
+                                Log.w(
+                                    "com.nayutacast",
+                                    "AudioDecoder unavailable, continuing with video only",
+                                    err
+                                )
+                                runCatching { track.release() }
+                            }.getOrNull()
+                        }
                         private val videoDecoder = Video.VideoDecoder(
                             observer.surface,
-                            description.video?.size?.width ?: 2560,
-                            description.video?.size?.height ?: 1440
-                        )
+                            description.video?.size?.width ?: 1920,
+                            description.video?.size?.height ?: 1080
+                        ) { width, height ->
+                            observer.onVideoSizeChanged(width, height)
+                        }
 
                         init {
-                            videoDecoder.start()
-                            audioDecoder?.start()
+                            try {
+                                videoDecoder.start()
+                            } catch (e: Exception) {
+                                runCatching { audioDecoder?.release() }
+                                runCatching { videoDecoder.release() }
+                                throw e
+                            }
                         }
 
                         override fun sink(
@@ -115,6 +139,10 @@ class NayutacastService {
                             try {
                                 if (isReleased) {
                                     return false
+                                }
+
+                                if (bytes.isEmpty()) {
+                                    return true
                                 }
 
                                 when (kind) {
@@ -146,21 +174,17 @@ class NayutacastService {
                         }
 
                         override fun close() {
-                            try {
-                                if (!isReleased) {
-                                    isReleased = true
-
-                                    audioDecoder?.release()
-                                    videoDecoder.release()
-                                    observer.close()
-                                }
-                            } catch (e: Exception) {
-                                Log.e(
-                                    "com.nayutacast",
-                                    "Nayutacast ReceiverAdapter close exception",
-                                    e
-                                )
+                            if (isReleased) {
+                                return
                             }
+                            isReleased = true
+
+                            runCatching { audioDecoder?.release() }
+                                .onFailure { Log.e("com.nayutacast", "AudioDecoder release failed", it) }
+                            runCatching { videoDecoder.release() }
+                                .onFailure { Log.e("com.nayutacast", "VideoDecoder release failed", it) }
+                            runCatching { observer.close() }
+                                .onFailure { Log.e("com.nayutacast", "Receiver observer close failed", it) }
                         }
                     }
                 )

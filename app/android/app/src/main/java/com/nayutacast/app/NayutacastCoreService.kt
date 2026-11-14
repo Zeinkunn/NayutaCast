@@ -1,212 +1,137 @@
 package com.nayutacast.app
 
-import android.Manifest
-import android.annotation.SuppressLint
-import android.app.Activity
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
-import android.hardware.display.DisplayManager
 import android.media.AudioAttributes
 import android.media.AudioFormat
-import android.media.AudioPlaybackCaptureConfiguration
-import android.media.AudioRecord
 import android.media.AudioTrack
-import android.media.projection.MediaProjection
-import android.media.projection.MediaProjectionManager
 import android.os.Binder
-import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import android.view.Surface
-import androidx.annotation.RequiresPermission
-import androidx.core.app.NotificationCompat
 import com.nayutacast.Audio
+import com.nayutacast.MediaStreamDescription
 import com.nayutacast.NayutacastReceiver
 import com.nayutacast.NayutacastReceiverObserver
-import com.nayutacast.NayutacastSender
-import com.nayutacast.NayutacastSenderConfigure
-import com.nayutacast.NayutacastSenderObserver
 import com.nayutacast.NayutacastService
-import com.nayutacast.MediaStreamDescription
 
 class NayutacastCoreService : Service() {
-    private var sender: NayutacastSender? = null
+    @Volatile
     private var receiver: NayutacastReceiver? = null
+    private val receiverLock = Any()
 
     override fun onBind(intent: Intent): IBinder {
         return ServiceBinder(this)
     }
 
     override fun onDestroy() {
+        stopReceiver()
         super.onDestroy()
-
-        sender?.release()
-        receiver?.release()
     }
 
-    @RequiresPermission(Manifest.permission.RECORD_AUDIO)
-    fun createSender(
-        intent: Intent,
-        configure: NayutacastSenderConfigure,
+    fun createReceiver(
+        surface: Surface,
+        description: MediaStreamDescription,
         observer: Observer
-    ): MediaStreamDescription? {
-        val notification = Notification(this)
+    ): Boolean {
+        stopReceiver()
 
-        val mediaProjection =
-            (getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager)
-                .getMediaProjection(Activity.RESULT_OK, intent)
+        return try {
+            val audioTrack = createLowLatencyAudioTrack()
+            val created = NayutacastService.createReceiver(
+                description,
+                object : NayutacastReceiverObserver() {
+                    override val surface: Surface = surface
+                    override val track: AudioTrack? = audioTrack
 
-        mediaProjection?.registerCallback(object : MediaProjection.Callback() {}, null)
+                    override fun onVideoSizeChanged(width: Int, height: Int) {
+                        observer.onVideoSizeChanged(width, height)
+                    }
 
-        val virtualDisplay = mediaProjection?.createVirtualDisplay(
-            "NayutacastVirtualDisplayService",
-            configure.video.width,
-            configure.video.height,
-            1,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            null,
-            null,
-            null
-        )
-
-        val audioConfig = Audio.getAudioCodecConfigure()
-        sender = NayutacastService.createSender(configure, object : NayutacastSenderObserver() {
-            override val record =
-                AudioRecord.Builder()
-                    .setAudioFormat(
-                        AudioFormat.Builder()
-                            .setSampleRate(audioConfig.sampleRate)
-                            .setChannelMask(AudioFormat.CHANNEL_IN_STEREO)
-                            .setEncoding(audioConfig.sampleBits)
-                            .build()
-                    )
-                    .setAudioPlaybackCaptureConfig(
-                        AudioPlaybackCaptureConfiguration.Builder(mediaProjection!!)
-                            .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-                            .addMatchingUsage(AudioAttributes.USAGE_GAME)
-                            .build()
-                    )
-                    .setBufferSizeInBytes(audioConfig.sampleRate / 10 * 2)
-                    .build()
-
-            override fun close() {
-                super.close()
-
-                sender?.release()
-                sender = null
-
-                notification.close()
-                mediaProjection.stop()
-                virtualDisplay?.release()
-
-                observer.onClosed()
+                    override fun close() {
+                        synchronized(receiverLock) {
+                            runCatching { receiver?.release() }
+                            receiver = null
+                        }
+                        observer.onClosed()
+                    }
+                }
+            )
+            synchronized(receiverLock) {
+                receiver = created
             }
-        })
-
-        virtualDisplay?.surface = sender?.surface
-
-        return sender?.getDescription()
+            true
+        } catch (e: Exception) {
+            Log.e("nayutacast", "Failed to create SRT receiver", e)
+            false
+        }
     }
 
-    fun createReceiver(surface: Surface, description: MediaStreamDescription, observer: Observer) {
+    fun stopReceiver() {
+        synchronized(receiverLock) {
+            runCatching { receiver?.release() }
+            receiver = null
+        }
+    }
+
+    private fun createLowLatencyAudioTrack(): AudioTrack? {
         val audioConfig = Audio.getAudioCodecConfigure()
-        receiver = NayutacastService.createReceiver(description, object : NayutacastReceiverObserver() {
-            override val surface = surface
-            override val track =
+        val channelMask = AudioFormat.CHANNEL_OUT_STEREO
+        val minBuf = AudioTrack.getMinBufferSize(
+            audioConfig.sampleRate,
+            channelMask,
+            audioConfig.sampleBits
+        ).coerceAtLeast(audioConfig.sampleRate / 10 * 4)
+        val bufferSize = maxOf(minBuf, audioConfig.sampleRate / 10 * 4)
+
+        val attrs = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+            .build()
+        val format = AudioFormat.Builder()
+            .setEncoding(audioConfig.sampleBits)
+            .setSampleRate(audioConfig.sampleRate)
+            .setChannelMask(channelMask)
+            .build()
+
+        return runCatching {
+            AudioTrack.Builder()
+                .setAudioAttributes(attrs)
+                .setAudioFormat(format)
+                .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .setBufferSizeInBytes(bufferSize)
+                .build()
+        }.getOrElse {
+            runCatching {
                 AudioTrack.Builder()
-                    .setAudioAttributes(
-                        AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_MEDIA)
-                            .setContentType(
-                                AudioAttributes.CONTENT_TYPE_MUSIC
-                            )
-                            .build()
-                    )
-                    .setAudioFormat(
-                        AudioFormat.Builder()
-                            .setEncoding(audioConfig.sampleBits)
-                            .setSampleRate(audioConfig.sampleRate)
-                            .setChannelMask(
-                                AudioFormat.CHANNEL_OUT_STEREO
-                            )
-                            .build()
-                    )
-                    .setPerformanceMode(
-                        AudioTrack.PERFORMANCE_MODE_LOW_LATENCY
-                    )
+                    .setAudioAttributes(attrs)
+                    .setAudioFormat(format)
                     .setTransferMode(AudioTrack.MODE_STREAM)
-                    .setBufferSizeInBytes(audioConfig.sampleRate / 10 * 2)
+                    .setBufferSizeInBytes(bufferSize)
                     .build()
-
-            override fun close() {
-                receiver?.release()
-                receiver = null
-
-                observer.onClosed()
-            }
-        })
+            }.onFailure { err ->
+                Log.w("nayutacast", "AudioTrack unavailable on device: ${err.message}")
+            }.getOrNull()
+        }
     }
 
     class ServiceBinder(private val service: NayutacastCoreService) : Binder() {
-        @RequiresPermission(Manifest.permission.RECORD_AUDIO)
-        fun createSender(
-            intent: Intent,
-            configure: NayutacastSenderConfigure,
-            observer: Observer
-        ): MediaStreamDescription? {
-            return service.createSender(intent, configure, observer)
-        }
-
         fun createReceiver(
             surface: Surface,
             description: MediaStreamDescription,
             observer: Observer
-        ) {
-            service.createReceiver(surface, description, observer)
-        }
-
-        fun stopSender() {
-            service.sender?.release()
-            service.sender = null
+        ): Boolean {
+            return service.createReceiver(surface, description, observer)
         }
 
         fun stopReceiver() {
-            service.receiver?.release()
-            service.receiver = null
+            service.stopReceiver()
         }
     }
 
-    abstract class Observer() {
+    abstract class Observer {
+        open fun onVideoSizeChanged(width: Int, height: Int) {}
         abstract fun onClosed()
-    }
-
-    @SuppressLint("ForegroundServiceType")
-    class Notification(private val service: NayutacastCoreService) {
-        init {
-            service.getSystemService(NotificationManager::class.java).createNotificationChannel(
-                NotificationChannel(
-                    "NayutacastCoreService",
-                    "NayutacastCoreService",
-                    NotificationManager.IMPORTANCE_LOW
-                )
-            )
-
-            service.startForeground(
-                1, NotificationCompat.Builder(service, "NayutacastCoreService")
-                    .setSmallIcon(R.drawable.ic_launcher_foreground)
-                    .setContentTitle("NayutacastCoreService")
-                    .setContentText("NayutacastCoreService is casting...")
-                    .setPriority(NotificationCompat.PRIORITY_DEFAULT).build()
-            )
-        }
-
-        fun close() {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                service.stopForeground(Service.STOP_FOREGROUND_REMOVE)
-            } else {
-                service.stopForeground(true)
-            }
-        }
     }
 }

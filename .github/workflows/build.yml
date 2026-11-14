@@ -118,17 +118,26 @@ jobs:
       - name: Cache Gradle packages
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build Android native Rust + Kotlin AAR library
+      - name: Build Android native Rust + Kotlin AAR and TV APK
         working-directory: app/android
         run: |
           chmod +x gradlew
-          ./gradlew :nayutacast:assembleRelease --no-daemon --stacktrace
+          ./gradlew :nayutacast:assembleRelease :app:assembleRelease --no-daemon --stacktrace
 
-      - name: Upload Android AAR artifact
+      - name: Stage and verify signed Android artifacts
+        run: |
+          mkdir -p android-dist
+          cp -v android/build/outputs/aar/*.aar android-dist/
+          APK_SRC="$(find app/android/app/build/outputs/apk/release -name '*.apk' | head -n 1)"
+          test -n "${APK_SRC}"
+          cp -v "${APK_SRC}" android-dist/nayutacast-android-tv.apk
+          "${ANDROID_HOME}/build-tools/35.0.0/apksigner" verify --verbose android-dist/nayutacast-android-tv.apk
+
+      - name: Upload Android AAR and TV APK artifacts
         uses: actions/upload-artifact@v4
         with:
           name: nayutacast-ci-android-arm64
-          path: android/build/outputs/aar/*.aar
+          path: android-dist/*
           retention-days: 7
 
   build-flatpak:

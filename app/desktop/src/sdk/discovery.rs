@@ -22,6 +22,7 @@ use socket2::{Domain, Protocol, Socket as Socket2, Type};
 pub use net_utils::NetworkKind as DeviceKind;
 
 pub const NAYUTACAST_APP_TOPIC: &str = "nayutacast-app-core";
+pub const NAYUTACAST_TV_CONTROL_PORT: u16 = 60344;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum CastProtocol {
@@ -99,6 +100,7 @@ pub struct DeviceInfo {
     pub airplay_port: Option<u16>,
     pub roku_port: Option<u16>,
     pub nayutacast_peer_id: Option<String>,
+    pub nayutacast_tv_port: Option<u16>,
     pub is_custom: bool,
 }
 
@@ -185,6 +187,9 @@ impl DeviceInfo {
         if self.nayutacast_peer_id.is_none() {
             self.nayutacast_peer_id = incoming.nayutacast_peer_id;
         }
+        if self.nayutacast_tv_port.is_none() {
+            self.nayutacast_tv_port = incoming.nayutacast_tv_port;
+        }
         if incoming.is_custom {
             self.is_custom = true;
             self.network = incoming.network;
@@ -196,7 +201,7 @@ impl DeviceInfo {
         }
         self.protocols.sort();
         self.port = match self.primary_protocol(None) {
-            CastProtocol::NayutacastNative => 8080,
+            CastProtocol::NayutacastNative => self.nayutacast_tv_port.unwrap_or(8080),
             CastProtocol::GoogleCast => self.cast_port.unwrap_or(8009),
             CastProtocol::DlnaAvTransport => {
                 if self.port != 0 && self.port != 8080 {
@@ -231,6 +236,45 @@ pub struct AirPlayEndpointInfo {
     pub has_pk: bool,
     pub status_flags: Option<u64>,
     pub os_build: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct NayutacastTvEndpointInfo {
+    #[serde(default)]
+    pub app: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub manufacturer: Option<String>,
+    #[serde(default)]
+    pub platform: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub srt_ready: bool,
+}
+
+/// Parses `GET /nayutacast/info` JSON returned by the Android TV APK.
+pub fn parse_nayutacast_tv_info(body: &str) -> Option<NayutacastTvEndpointInfo> {
+    let info: NayutacastTvEndpointInfo = serde_json::from_str(body.trim()).ok()?;
+    if !info.app.to_ascii_lowercase().contains("nayutacast") {
+        return None;
+    }
+    Some(info)
+}
+
+/// Queries a NayutaCast Android TV control endpoint (`60344/nayutacast/info`).
+pub async fn probe_nayutacast_tv_info(ip: IpAddr, port: u16) -> Option<NayutacastTvEndpointInfo> {
+    let url = format!("http://{}:{}/nayutacast/info", ip, port);
+    let resp = http_request("GET", &url, &[], None, Duration::from_millis(600))
+        .await
+        .ok()?;
+    if resp.status >= 400 {
+        return None;
+    }
+    parse_nayutacast_tv_info(&resp.body_str())
 }
 
 fn read_be_u64(slice: &[u8]) -> u64 {
@@ -893,6 +937,7 @@ impl DiscoveryObserver for AppDiscoveryObserver {
             airplay_port: None,
             roku_port: None,
             nayutacast_peer_id: Some(ctx.id.clone()),
+            nayutacast_tv_port: None,
             is_custom: false,
         };
         DeviceManager::merge_into_map(&self.devices, dev).await;
@@ -947,6 +992,7 @@ impl DiscoveryObserver for AppDiscoveryObserver {
             airplay_port: None,
             roku_port: None,
             nayutacast_peer_id: Some(ctx.id),
+            nayutacast_tv_port: None,
             is_custom: false,
         };
         DeviceManager::merge_into_map(&self.devices, dev).await;
@@ -1247,6 +1293,7 @@ impl DeviceManager {
             airplay_port: None,
             roku_port: None,
             nayutacast_peer_id: None,
+            nayutacast_tv_port: None,
             is_custom,
         };
         Self::merge_into_map(devices, dev).await;
@@ -1319,6 +1366,7 @@ impl DeviceManager {
                                 airplay_port,
                                 roku_port: None,
                                 nayutacast_peer_id: None,
+                                nayutacast_tv_port: None,
                                 is_custom: false,
                             };
                             Self::merge_into_map(&devices, dev).await;
@@ -1454,7 +1502,7 @@ impl DeviceManager {
             Duration::from_millis(140)
         };
 
-        let (p8009, p8008, p7000, p7001, p7100, p8060, p8080, p9197) = tokio::join!(
+        let (p8009, p8008, p7000, p7001, p7100, p8060, p8080, p9197, p60344) = tokio::join!(
             tcp_port_open(ip, 8009, timeout),
             tcp_port_open(ip, 8008, timeout),
             tcp_port_open(ip, 7000, timeout),
@@ -1463,6 +1511,7 @@ impl DeviceManager {
             tcp_port_open(ip, 8060, timeout),
             tcp_port_open(ip, 8080, timeout),
             tcp_port_open(ip, 9197, timeout),
+            tcp_port_open(ip, NAYUTACAST_TV_CONTROL_PORT, timeout),
         );
 
         let airplay_open_port = [
@@ -1474,7 +1523,8 @@ impl DeviceManager {
         .flatten()
         .next();
 
-        let any_open = p8009 || p8008 || airplay_open_port.is_some() || p8060 || p8080 || p9197;
+        let any_open =
+            p8009 || p8008 || airplay_open_port.is_some() || p8060 || p8080 || p9197 || p60344;
         if !any_open && !is_custom && !deep_dlna {
             return None;
         }
@@ -1487,6 +1537,26 @@ impl DeviceManager {
         let mut av_ctrl = None;
         let mut cm_ctrl = None;
         let mut location_url = None;
+        let mut detected_tv_port = None;
+
+        if p60344
+            && let Some(tv_info) = probe_nayutacast_tv_info(ip, NAYUTACAST_TV_CONTROL_PORT).await
+        {
+            detected_tv_port = Some(NAYUTACAST_TV_CONTROL_PORT);
+            if friendly_name.is_none() {
+                friendly_name = tv_info.name.filter(|s| !s.is_empty());
+            }
+            manufacturer = manufacturer.or_else(|| {
+                tv_info
+                    .manufacturer
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| Some("NayutaCast".into()))
+            });
+            model_name = model_name.or_else(|| tv_info.model.filter(|s| !s.is_empty()));
+            if !protocols.contains(&CastProtocol::NayutacastNative) {
+                protocols.push(CastProtocol::NayutacastNative);
+            }
+        }
 
         if p8008 {
             let url = format!("http://{}:8008/ssdp/device-desc.xml", ip);
@@ -1642,7 +1712,9 @@ impl DeviceManager {
 
         protocols.sort();
         let name = friendly_name.unwrap_or_else(|| {
-            if protocols.contains(&CastProtocol::GoogleCast) {
+            if protocols.contains(&CastProtocol::NayutacastNative) {
+                format!("NayutaCast Receiver ({})", ip)
+            } else if protocols.contains(&CastProtocol::GoogleCast) {
                 format!("Chromecast / Android TV ({})", ip)
             } else if protocols.contains(&CastProtocol::DlnaAvTransport) {
                 format!("DLNA Smart TV ({})", ip)
@@ -1659,7 +1731,9 @@ impl DeviceManager {
             id: format!("ip:{}", ip),
             name,
             ip,
-            port: if p8009 {
+            port: if let Some(tv_port) = detected_tv_port {
+                tv_port
+            } else if p8009 {
                 8009
             } else if let Some(ap_port) = detected_airplay_port {
                 ap_port
@@ -1679,6 +1753,7 @@ impl DeviceManager {
             airplay_port: detected_airplay_port,
             roku_port: p8060.then_some(8060),
             nayutacast_peer_id: None,
+            nayutacast_tv_port: detected_tv_port,
             is_custom,
         };
         Self::merge_into_map(devices, dev.clone()).await;
@@ -1762,6 +1837,7 @@ impl DeviceManager {
             airplay_port: None,
             roku_port: None,
             nayutacast_peer_id: None,
+            nayutacast_tv_port: None,
             is_custom: true,
         })
     }
@@ -2006,5 +2082,26 @@ mod tests {
         assert_eq!(dict.get("name").map(String::as_str), Some("Polytron 4K"));
         assert_eq!(dict.get("model").map(String::as_str), Some("ATV"));
         assert_eq!(dict.get("statusFlags").map(String::as_str), Some("516"));
+    }
+
+    #[test]
+    fn parse_nayutacast_tv_info_accepts_tv_json_and_ignores_unrelated() {
+        let valid = r#"{
+            "app": "NayutaCast TV",
+            "name": "Polytron 4K TV",
+            "model": "PLD 43TAG9959",
+            "manufacturer": "Polytron",
+            "platform": "android-tv",
+            "version": "0.4.0",
+            "srt_ready": true
+        }"#;
+        let parsed = parse_nayutacast_tv_info(valid).expect("valid TV info");
+        assert_eq!(parsed.name.as_deref(), Some("Polytron 4K TV"));
+        assert_eq!(parsed.model.as_deref(), Some("PLD 43TAG9959"));
+        assert_eq!(parsed.manufacturer.as_deref(), Some("Polytron"));
+        assert!(parsed.srt_ready);
+
+        let unrelated = r#"{"app":"OtherService","name":"Router"}"#;
+        assert!(parse_nayutacast_tv_info(unrelated).is_none());
     }
 }

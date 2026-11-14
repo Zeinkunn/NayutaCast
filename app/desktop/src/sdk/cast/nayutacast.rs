@@ -13,7 +13,8 @@ use tokio::sync::RwLock;
 
 use crate::sdk::{
     cast::{CastingState, browser_watch_url},
-    discovery::{DeviceInfo, DeviceManager},
+    discovery::{DeviceInfo, DeviceManager, NAYUTACAST_TV_CONTROL_PORT},
+    net_utils::http_request,
 };
 
 /// Thread-safe handle wrapping a running `NayutacastSender` on a dedicated
@@ -47,10 +48,31 @@ impl Drop for SrtSenderHandle {
 pub struct NayutacastCastSession {
     handle: Option<SrtSenderHandle>,
     device_mgr: Arc<DeviceManager>,
+    target_ip: IpAddr,
+    target_tv_port: Option<u16>,
     target_peer_id: Option<String>,
     sender_name: String,
     stopped: Arc<AtomicBool>,
     poll_task: Option<tokio::task::JoinHandle<()>>,
+}
+
+async fn post_tv_control(
+    ip: IpAddr,
+    port: u16,
+    path: &str,
+    body: Option<&[u8]>,
+) -> anyhow::Result<()> {
+    let url = format!("http://{}:{}{}", ip, port, path);
+    let headers = if body.is_some() {
+        vec![("Content-Type", "application/json")]
+    } else {
+        Vec::new()
+    };
+    let resp = http_request("POST", &url, &headers, body, Duration::from_millis(1200)).await?;
+    if resp.status >= 400 {
+        anyhow::bail!("TV control HTTP {} returned status {}", url, resp.status);
+    }
+    Ok(())
 }
 
 impl NayutacastCastSession {
@@ -86,13 +108,44 @@ impl NayutacastCastSession {
             _ => TransportStrategy::Direct(fixed_addr),
         };
 
-        device_mgr
+        let desc_json = serde_json::to_vec(&desc)?;
+        let tv_port = device
+            .nayutacast_tv_port
+            .unwrap_or(NAYUTACAST_TV_CONTROL_PORT);
+        let mut http_ok = false;
+        let mut active_tv_port = device.nayutacast_tv_port;
+        match post_tv_control(device.ip, tv_port, "/nayutacast/start", Some(&desc_json)).await {
+            Ok(()) => {
+                http_ok = true;
+                active_tv_port = Some(tv_port);
+                log::info!(
+                    "Sent /nayutacast/start directly to {}:{}",
+                    device.ip,
+                    tv_port
+                );
+            }
+            Err(e) => {
+                log::debug!(
+                    "Direct HTTP /nayutacast/start to {}:{} unavailable: {}",
+                    device.ip,
+                    tv_port,
+                    e
+                );
+            }
+        }
+
+        let p2p_res = device_mgr
             .announce_stream(
                 device.nayutacast_peer_id.as_deref(),
                 &sender_name,
                 Some(desc.clone()),
             )
-            .await?;
+            .await;
+
+        if !http_ok && let Err(e) = p2p_res {
+            handle.stop();
+            return Err(e);
+        }
 
         *state.write().await = CastingState::WaitingForReceiver {
             protocol: "NayutaCast Native (SRT)".to_string(),
@@ -108,6 +161,14 @@ impl NayutacastCastSession {
         let mut connected = false;
         for step in 0..40 {
             if step == 5 {
+                if !http_ok
+                    && post_tv_control(device.ip, tv_port, "/nayutacast/start", Some(&desc_json))
+                        .await
+                        .is_ok()
+                {
+                    http_ok = true;
+                    active_tv_port = Some(tv_port);
+                }
                 let _ = device_mgr
                     .announce_stream(
                         device.nayutacast_peer_id.as_deref(),
@@ -124,6 +185,9 @@ impl NayutacastCastSession {
         }
 
         if !connected {
+            if let Some(p) = active_tv_port {
+                let _ = post_tv_control(device.ip, p, "/nayutacast/stop", None).await;
+            }
             let _ = device_mgr
                 .announce_stream(device.nayutacast_peer_id.as_deref(), &sender_name, None)
                 .await;
@@ -174,6 +238,8 @@ impl NayutacastCastSession {
         Ok(Self {
             handle: Some(handle),
             device_mgr,
+            target_ip: device.ip,
+            target_tv_port: active_tv_port,
             target_peer_id: device.nayutacast_peer_id.clone(),
             sender_name,
             stopped,
@@ -186,6 +252,9 @@ impl NayutacastCastSession {
         if let Some(t) = self.poll_task.take() {
             t.abort();
             let _ = t.await;
+        }
+        if let Some(p) = self.target_tv_port {
+            let _ = post_tv_control(self.target_ip, p, "/nayutacast/stop", None).await;
         }
         let _ = self
             .device_mgr

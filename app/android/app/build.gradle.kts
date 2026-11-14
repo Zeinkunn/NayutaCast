@@ -1,6 +1,3 @@
-import com.android.build.gradle.internal.tasks.factory.dependsOn
-import java.util.Locale
-
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -17,8 +14,22 @@ android {
         applicationId = "com.nayutacast.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 5
+        versionName = "0.4.1"
+    }
+
+    val releaseKsPath = System.getenv("ANDROID_KEYSTORE_PATH")
+        ?.takeIf { it.isNotBlank() && file(it).exists() }
+
+    if (releaseKsPath != null) {
+        signingConfigs {
+            create("release") {
+                storeFile = file(releaseKsPath)
+                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: "nayutacast"
+                keyAlias = System.getenv("ANDROID_KEY_ALIAS") ?: "nayutacast"
+                keyPassword = System.getenv("ANDROID_KEY_PASSWORD") ?: "nayutacast"
+            }
+        }
     }
 
     buildTypes {
@@ -26,8 +37,14 @@ android {
             isDebuggable = false
             isMinifyEnabled = true
             isShrinkResources = true
+            signingConfig = if (releaseKsPath != null) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
             proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
             )
         }
     }
@@ -48,7 +65,6 @@ android {
 }
 
 dependencies {
-
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
@@ -57,32 +73,6 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
-    implementation(libs.androidx.webkit)
     implementation(libs.kotlinx.serialization.json)
-    implementation(libs.kotlin.faker)
     implementation(project(":nayutacast"))
-}
-
-val runPreCopyCommand by tasks.registering(Exec::class) {
-    workingDir = file("../../frontend")
-
-    doFirst {
-        if (System.getProperty("os.name").lowercase(Locale.getDefault()).contains("win")) {
-            commandLine("powershell", "-Command", "yarn build")
-        } else {
-            commandLine("bash", "-c", "yarn build")
-        }
-    }
-}
-
-val copyAssets by tasks.registering(Copy::class) {
-    from("../../frontend/dist")
-    into("src/main/assets")
-    include("**/*")
-}
-
-copyAssets.dependsOn(runPreCopyCommand)
-
-tasks.named("preBuild") {
-    dependsOn(copyAssets)
 }

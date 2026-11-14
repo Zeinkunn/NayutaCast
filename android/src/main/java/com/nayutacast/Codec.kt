@@ -12,6 +12,7 @@ import android.os.Process
 import android.util.Log
 import android.view.Surface
 import java.nio.ByteBuffer
+import java.util.concurrent.atomic.AtomicBoolean
 
 abstract class ByteArraySinker {
     abstract fun sink(info: StreamBufferInfo, buf: ByteArray)
@@ -165,83 +166,163 @@ class Video {
         )
     }
 
-    class VideoDecoder(surface: Surface, width: Int, height: Int) {
+    class VideoDecoder(
+        surface: Surface,
+        width: Int,
+        height: Int,
+        private val onVideoSizeChanged: ((Int, Int) -> Unit)? = null
+    ) {
+        @Volatile
         var isRunning: Boolean = false
+            private set
 
-        private var codec: MediaCodec
+        private val released = AtomicBoolean(false)
+        private val codec: MediaCodec
         private val bufferInfo = MediaCodec.BufferInfo()
-        private var worker: Thread
+        private val worker: Thread
 
         init {
-
-            var codecName: String? = null
-            run {
-                val codecList = MediaCodecList(MediaCodecList.REGULAR_CODECS)
-                val codecInfos = codecList.codecInfos
-
-                for (codecInfo in codecInfos) {
-                    if (!codecInfo.isEncoder && codecInfo.isHardwareAccelerated) {
-                        for (type in codecInfo.supportedTypes) {
-                            if (type == "video/avc" && codecInfo.name.indexOf("low_latency") > 0) {
-                                codecName = codecInfo.name
-                            }
-                        }
-                    }
-                }
-            }
-
-            codec = if (codecName != null) {
-                MediaCodec.createByCodecName(codecName!!)
-            } else {
-                MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-            }
-
-            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
-            format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-            format.setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                if (codec.name.indexOf(".rk.") < 0 && codec.name.indexOf(".hisi.") < 0) {
-                    format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
-                }
-            }
-
-            codec.configure(format, surface, null, 0)
-            worker = Thread {
+            codec = createAndConfigureDecoder(surface, width.coerceAtLeast(16), height.coerceAtLeast(16))
+            worker = Thread({
                 Process.setThreadPriority(Process.THREAD_PRIORITY_VIDEO)
 
                 while (isRunning) {
                     try {
-                        val index = codec.dequeueOutputBuffer(bufferInfo, -1)
-                        if (index >= 0) {
-                            codec.releaseOutputBuffer(index, true)
+                        val index = codec.dequeueOutputBuffer(bufferInfo, 10_000L)
+                        when {
+                            index >= 0 -> {
+                                codec.releaseOutputBuffer(index, bufferInfo.size > 0)
+                            }
+                            index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                                val outFmt = codec.outputFormat
+                                val outWidth =
+                                    if (outFmt.containsKey(MediaFormat.KEY_WIDTH)) {
+                                        outFmt.getInteger(MediaFormat.KEY_WIDTH)
+                                    } else {
+                                        0
+                                    }
+                                val outHeight =
+                                    if (outFmt.containsKey(MediaFormat.KEY_HEIGHT)) {
+                                        outFmt.getInteger(MediaFormat.KEY_HEIGHT)
+                                    } else {
+                                        0
+                                    }
+                                if (outWidth > 0 && outHeight > 0) {
+                                    onVideoSizeChanged?.invoke(outWidth, outHeight)
+                                }
+                            }
                         }
                     } catch (e: Exception) {
-                        Log.w("com.nayutacast", "VideoDecoder worker exception", e)
+                        if (isRunning) {
+                            Log.w("com.nayutacast", "VideoDecoder worker exception", e)
+                        }
+                        isRunning = false
+                        break
+                    }
+                }
+            }, "NayutaCast-VideoDecoder")
+        }
 
-                        release()
+        private fun createAndConfigureDecoder(
+            surface: Surface,
+            width: Int,
+            height: Int
+        ): MediaCodec {
+            var lowLatencyCodecName: String? = null
+            val codecList = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+            for (codecInfo in codecList.codecInfos) {
+                if (!codecInfo.isEncoder && codecInfo.isHardwareAccelerated) {
+                    if (codecInfo.supportedTypes.any { it.equals(MediaFormat.MIMETYPE_VIDEO_AVC, ignoreCase = true) } &&
+                        codecInfo.name.contains("low_latency", ignoreCase = true)
+                    ) {
+                        lowLatencyCodecName = codecInfo.name
+                        break
                     }
                 }
             }
+
+            fun buildFormat(targetCodec: MediaCodec): MediaFormat {
+                val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    if (!targetCodec.name.contains(".rk.") && !targetCodec.name.contains(".hisi.")) {
+                        val supported = runCatching {
+                            targetCodec.codecInfo
+                                .getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                                .isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency)
+                        }.getOrDefault(false)
+                        if (supported) {
+                            format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+                        }
+                    }
+                }
+                return format
+            }
+
+            if (lowLatencyCodecName != null) {
+                val preferred = runCatching {
+                    val candidate = MediaCodec.createByCodecName(lowLatencyCodecName)
+                    try {
+                        candidate.configure(buildFormat(candidate), surface, null, 0)
+                        candidate
+                    } catch (e: Exception) {
+                        runCatching { candidate.release() }
+                        throw e
+                    }
+                }.getOrNull()
+                if (preferred != null) {
+                    return preferred
+                }
+            }
+
+            val fallback = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+            try {
+                fallback.configure(buildFormat(fallback), surface, null, 0)
+            } catch (e: Exception) {
+                runCatching { fallback.release() }
+                throw e
+            }
+            return fallback
         }
 
         fun sink(buf: ByteArray, flags: Int, timestamp: Long) {
+            if (!isRunning || buf.isEmpty()) {
+                return
+            }
+
             try {
-                val index = codec.dequeueInputBuffer(-1)
+                val index = codec.dequeueInputBuffer(20_000L)
                 if (index >= 0) {
-                    codec.getInputBuffer(index)?.clear()
-                    codec.getInputBuffer(index)?.put(buf)
-                    codec.queueInputBuffer(index, 0, buf.size, timestamp, flags)
+                    val inputBuffer = codec.getInputBuffer(index)
+                    if (inputBuffer == null) {
+                        codec.queueInputBuffer(index, 0, 0, 0L, 0)
+                        return
+                    }
+                    inputBuffer.clear()
+                    if (buf.size > inputBuffer.remaining()) {
+                        Log.w(
+                            "com.nayutacast",
+                            "VideoDecoder packet (${buf.size}B) exceeds input buffer (${inputBuffer.remaining()}B)"
+                        )
+                        codec.queueInputBuffer(index, 0, 0, 0L, 0)
+                        return
+                    }
+                    inputBuffer.put(buf)
+                    val safeFlags = flags and (
+                        MediaCodec.BUFFER_FLAG_KEY_FRAME or
+                            MediaCodec.BUFFER_FLAG_CODEC_CONFIG or
+                            MediaCodec.BUFFER_FLAG_END_OF_STREAM
+                        )
+                    codec.queueInputBuffer(index, 0, buf.size, timestamp.coerceAtLeast(0L), safeFlags)
                 }
             } catch (e: Exception) {
-                Log.w("com.nayutacast", "VideoDecoder sink exception", e)
-
-                release()
+                if (isRunning) {
+                    Log.w("com.nayutacast", "VideoDecoder sink exception", e)
+                }
             }
         }
 
         fun start() {
-            if (!isRunning) {
+            if (!released.get() && !isRunning) {
                 isRunning = true
 
                 codec.start()
@@ -250,12 +331,19 @@ class Video {
         }
 
         fun release() {
-            if (isRunning) {
-                isRunning = false
-
-                codec.stop()
-                codec.release()
+            if (!released.compareAndSet(false, true)) {
+                return
             }
+
+            val wasRunning = isRunning
+            isRunning = false
+            if (wasRunning && Thread.currentThread() !== worker) {
+                runCatching { worker.join(500L) }
+            }
+            if (wasRunning) {
+                runCatching { codec.stop() }
+            }
+            runCatching { codec.release() }
         }
     }
 }
@@ -296,31 +384,43 @@ class Audio {
     }
 
     class AudioDecoder(private val track: AudioTrack) {
+        @Volatile
         var isRunning: Boolean = false
+            private set
 
+        private val released = AtomicBoolean(false)
         private val bufferInfo = MediaCodec.BufferInfo()
-        private var codec: MediaCodec
-        private var worker: Thread
+        private val codec: MediaCodec
+        private val worker: Thread
 
         init {
             val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_OPUS, 48000, 2)
-            format.setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
             format.setInteger(MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
 
             codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_OPUS)
-            codec.configure(format, null, null, 0)
+            try {
+                codec.configure(format, null, null, 0)
+            } catch (e: Exception) {
+                runCatching { codec.release() }
+                throw e
+            }
 
-            worker = Thread {
+            worker = Thread({
                 Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
 
-                val buf = ByteArray(1024 * 1024)
+                var buf = ByteArray(1024 * 64)
 
                 while (isRunning) {
                     try {
-                        val index = codec.dequeueOutputBuffer(bufferInfo, -1)
+                        val index = codec.dequeueOutputBuffer(bufferInfo, 10_000L)
                         if (index >= 0) {
                             val outputBuffer = codec.getOutputBuffer(index)
                             if (outputBuffer != null && bufferInfo.size > 0) {
+                                if (bufferInfo.size > buf.size) {
+                                    buf = ByteArray(bufferInfo.size)
+                                }
+                                outputBuffer.position(bufferInfo.offset)
+                                outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
                                 outputBuffer.get(buf, 0, bufferInfo.size)
                                 track.write(buf, 0, bufferInfo.size)
                             }
@@ -328,25 +428,51 @@ class Audio {
                             codec.releaseOutputBuffer(index, false)
                         }
                     } catch (e: Exception) {
-                        Log.w("com.nayutacast", "AudioDecoder worker exception", e)
-
-                        release()
+                        if (isRunning) {
+                            Log.w("com.nayutacast", "AudioDecoder worker exception", e)
+                        }
+                        isRunning = false
+                        break
                     }
+                }
+            }, "NayutaCast-AudioDecoder")
+        }
+
+        fun sink(buf: ByteArray, flags: Int, timestamp: Long) {
+            if (!isRunning || buf.isEmpty()) {
+                return
+            }
+
+            try {
+                val index = codec.dequeueInputBuffer(10_000L)
+                if (index >= 0) {
+                    val inputBuffer = codec.getInputBuffer(index)
+                    if (inputBuffer == null) {
+                        codec.queueInputBuffer(index, 0, 0, 0L, 0)
+                        return
+                    }
+                    inputBuffer.clear()
+                    if (buf.size > inputBuffer.remaining()) {
+                        codec.queueInputBuffer(index, 0, 0, 0L, 0)
+                        return
+                    }
+                    inputBuffer.put(buf)
+                    val safeFlags = flags and (
+                        MediaCodec.BUFFER_FLAG_KEY_FRAME or
+                            MediaCodec.BUFFER_FLAG_CODEC_CONFIG or
+                            MediaCodec.BUFFER_FLAG_END_OF_STREAM
+                        )
+                    codec.queueInputBuffer(index, 0, buf.size, timestamp.coerceAtLeast(0L), safeFlags)
+                }
+            } catch (e: Exception) {
+                if (isRunning) {
+                    Log.w("com.nayutacast", "AudioDecoder sink exception", e)
                 }
             }
         }
 
-        fun sink(buf: ByteArray, flags: Int, timestamp: Long) {
-            val index = codec.dequeueInputBuffer(1000)
-            if (index >= 0) {
-                codec.getInputBuffer(index)?.clear()
-                codec.getInputBuffer(index)?.put(buf)
-                codec.queueInputBuffer(index, 0, buf.size, timestamp, flags)
-            }
-        }
-
         fun start() {
-            if (!isRunning) {
+            if (!released.get() && !isRunning) {
                 isRunning = true
 
                 codec.start()
@@ -356,14 +482,21 @@ class Audio {
         }
 
         fun release() {
-            if (isRunning) {
-                isRunning = false
-
-                track.stop()
-                track.release()
-                codec.stop()
-                codec.release()
+            if (!released.compareAndSet(false, true)) {
+                return
             }
+
+            val wasRunning = isRunning
+            isRunning = false
+            if (wasRunning && Thread.currentThread() !== worker) {
+                runCatching { worker.join(500L) }
+            }
+            if (wasRunning) {
+                runCatching { track.stop() }
+                runCatching { codec.stop() }
+            }
+            runCatching { track.release() }
+            runCatching { codec.release() }
         }
     }
 

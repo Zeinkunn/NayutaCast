@@ -58,7 +58,7 @@
 - **DLNA / UPnP (`AVTransport:1`)**: Works with Samsung Tizen, LG webOS, Sony, Hisense, and generic UPnP renderers, while filtering out non-TV router/IGD advertisements.
 - **Apple AirPlay (`7000`) & Roku ECP (`8060`)**: Built-in protocol sessions alongside automatic fallback probing.
 - **Embedded HTTP Live Streaming & Browser TV (`/watch`)**: Serves live MPEG-TS (`/live.ts`, `/live.mpeg`), fragmented MP4 (`/live.mp4`), rolling HLS (`/live.m3u8`, `/seg_<n>.ts`), and a zero-install HTML5 `/watch` page for any Smart TV browser.
-- **NayutaCast Native SRT**: Ultra-low-latency direct casting between NayutaCast peers discovered via libp2p (`nayutacast-app-core`), tracking real receiver connection counts before marking sessions active.
+- **NayutaCast Native SRT & Dedicated Android TV Receiver APK**: Ultra-low-latency direct SRT casting to Android TV devices running the native Leanback APK (auto-discovered via LAN port `60344` + `libp2p`), tracking real receiver connection counts before marking sessions active.
 
 ### OS Virtual Display (`Mirror` / `Extend`)
 - On Linux/Hyprland, NayutaCast creates a virtual `HEADLESS-*` monitor output (`VirtualDisplayGuard`) that appears natively inside your OS **Display Settings**.
@@ -93,7 +93,7 @@ NayutaCast/
 ├── docs/images/     # Application screenshots
 └── app/
     ├── desktop/     # 100% Native Rust desktop application (eframe / egui + Smart TV backends)
-    └── android/     # Android client application
+    └── android/     # Dedicated Android TV (Leanback) & Android SRT receiver APK (Jetpack Compose)
 ```
 
 ## Build & Run Instructions
@@ -144,6 +144,18 @@ Or build the `.flatpak` bundle locally:
 ```bash
 ./packaging/flatpak/build-flatpak.sh
 ```
+
+### Install Android TV Receiver APK (Android TV 10+ / ARM64)
+
+Download `nayutacast-android-tv.apk` from [GitHub Releases](https://github.com/Zeinkunn/NayutaCast/releases) and install on your Android TV (Google TV / Polytron / Sony / Xiaomi / etc.):
+
+```bash
+# Optional: install directly over LAN using ADB debugging
+adb connect <TV_IP>:5555
+adb install -r nayutacast-android-tv.apk
+```
+
+Or copy `nayutacast-android-tv.apk` via USB flash drive / "Send Files to TV" and open with a file manager on your TV. Launch **NayutaCast TV** from the Android TV home screen, then click **Refresh** in NayutaCast Desktop to mirror your screen with low-latency SRT.
 
 ### Build & Test Workspace
 

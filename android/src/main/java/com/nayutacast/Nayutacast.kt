@@ -145,6 +145,11 @@ class NayutacastReceiverAdapter(private val releaseHandle: () -> Unit) {
 
 internal class Nayutacast {
     companion object {
+        internal val json = Json {
+            ignoreUnknownKeys = true
+            encodeDefaults = true
+        }
+
         init {
             System.loadLibrary("nayutacast")
         }
@@ -153,7 +158,7 @@ internal class Nayutacast {
     fun createSender(
         options: TransportOptions
     ): NayutacastSenderAdapter {
-        var ptr = createTransportSender(Json.encodeToString(options))
+        var ptr = createTransportSender(json.encodeToString(options))
         if (ptr == 0L) {
             throw Exception("failed to create transport sender")
         }
@@ -178,7 +183,7 @@ internal class Nayutacast {
     fun createReceiver(
         id: String, options: TransportOptions, observer: NayutacastReceiverAdapterObserver
     ): NayutacastReceiverAdapter {
-        var ptr = createTransportReceiver(id, Json.encodeToString(options), observer)
+        var ptr = createTransportReceiver(id, json.encodeToString(options), observer)
         if (ptr == 0L) {
             throw Exception("failed to create transport receiver")
         }

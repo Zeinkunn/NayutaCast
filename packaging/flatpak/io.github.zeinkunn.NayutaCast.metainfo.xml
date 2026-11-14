@@ -44,6 +44,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.4.1" date="2026-11-14">
+      <description>
+        <p>Added dedicated Android TV Receiver APK (Leanback D-pad UI, port 60344 direct SRT control, and hardened hardware MediaCodec decoding).</p>
+      </description>
+    </release>
     <release version="0.4.0" date="2026-11-14">
       <description>
         <p>Initial v0.4.0 release with 100% native Rust desktop UI, Smart TV casting fixes, VAAPI/x264 live muxer timing improvements, and Flatpak support.</p>

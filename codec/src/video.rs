@@ -665,16 +665,18 @@ impl VideoEncoder {
         if !self.initialized {
             self.initialized = true;
 
-            return Some((
-                unsafe {
-                    std::slice::from_raw_parts(
-                        context_ref.extradata,
-                        context_ref.extradata_size as usize,
-                    )
-                },
-                2,
-                packet_ref.pts as u64,
-            ));
+            if !context_ref.extradata.is_null() && context_ref.extradata_size > 0 {
+                return Some((
+                    unsafe {
+                        std::slice::from_raw_parts(
+                            context_ref.extradata,
+                            context_ref.extradata_size as usize,
+                        )
+                    },
+                    2,
+                    0,
+                ));
+            }
         }
 
         if unsafe { avcodec_receive_packet(self.context, self.packet) } != 0 {
@@ -684,7 +686,7 @@ impl VideoEncoder {
         Some((
             unsafe { std::slice::from_raw_parts(packet_ref.data, packet_ref.size as usize) },
             packet_ref.flags,
-            packet_ref.pts as u64,
+            packet_ref.pts.max(0) as u64,
         ))
     }
 }
